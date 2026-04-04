@@ -1,0 +1,23 @@
+# Rust
+/target
+**/target
+
+# Frontend
+**/node_modules
+**/dist
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tauri auto-generated
+**/gen/schemas
+
+# Secrets (local only)
+.claude-sync/secrets.json
