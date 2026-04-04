@@ -50,7 +50,8 @@ cargo install --path crates/claude-sync-cli
 ### GUI (requires WebView2 on Windows)
 
 ```bash
-cargo tauri build -b crates/claude-sync-gui
+cd crates/claude-sync-gui/frontend && pnpm install && cd ../../..
+cd crates/claude-sync-gui && cargo tauri build
 ```
 
 ## CLI Usage
