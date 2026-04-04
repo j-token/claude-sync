@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nickel-org/nickel.rs/master/examples/json_io/Cargo.toml",
   "productName": "Claude Sync",
   "version": "0.1.0",
-  "identifier": "com.claude-sync.app",
+  "identifier": "com.claudesync.desktop",
   "build": {
     "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173",
