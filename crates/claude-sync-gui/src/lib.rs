@@ -1,10 +1,13 @@
-use claude_sync_core::config::SyncConfig;
+use claude_sync_core::config::{
+    AuthConfig, AuthMethod, DeviceConfig, Platform, RepoConfig, SnapshotConfig, SyncConfig,
+    SyncOptions,
+};
 use claude_sync_core::discovery;
 use claude_sync_core::git_ops::{self, GitRepo};
 use claude_sync_core::manifest::SyncManifest;
 use claude_sync_core::secret::SecretEngine;
 use claude_sync_core::snapshot;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// GUI에서 사용하는 싱크 상태 정보
 #[derive(Serialize)]
@@ -314,6 +317,83 @@ fn sync_pull() -> Result<String, String> {
     Ok(format!("Pull 완료: {} files", count))
 }
 
+/// GUI 셋업 위저드 입력값
+#[derive(Deserialize)]
+struct SetupInput {
+    repo_url: String,
+    auth_method: String,
+    device_id: String,
+    sync_memory: bool,
+    sync_teams: bool,
+    sync_skills: bool,
+}
+
+#[tauri::command]
+fn check_git() -> Result<String, String> {
+    git_ops::check_git_available().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_default_device_id() -> String {
+    hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "my-device".to_string())
+}
+
+#[tauri::command]
+fn run_setup(input: SetupInput) -> Result<String, String> {
+    let auth_method = match input.auth_method.as_str() {
+        "ssh_key" => AuthMethod::SshKey,
+        "https_token" => AuthMethod::HttpsToken,
+        "gh_cli" => AuthMethod::GhCli,
+        _ => AuthMethod::SshAgent,
+    };
+
+    let config = SyncConfig {
+        schema_version: 1,
+        repo: RepoConfig {
+            url: input.repo_url.clone(),
+            branch: "main".to_string(),
+        },
+        auth: AuthConfig {
+            method: auth_method,
+            ssh_key_path: None,
+        },
+        device: DeviceConfig {
+            id: input.device_id.clone(),
+            platform: Platform::current(),
+        },
+        sync: SyncOptions {
+            auto_sync: false,
+            auto_sync_interval_secs: 300,
+            sync_memory: input.sync_memory,
+            sync_teams: input.sync_teams,
+            sync_skills: input.sync_skills,
+        },
+        secret_patterns: SyncConfig::default_secret_patterns(),
+        platform_path_rules: Vec::new(),
+        snapshots: SnapshotConfig::default(),
+    };
+
+    config.save().map_err(|e| e.to_string())?;
+
+    // 싱크 레포 초기화
+    let repo_path = SyncConfig::repo_path();
+    if !repo_path.join(".git").exists() {
+        match GitRepo::clone_repo(&input.repo_url, &repo_path) {
+            Ok(_) => {}
+            Err(_) => {
+                let repo = GitRepo::open_or_init(&repo_path).map_err(|e| e.to_string())?;
+                repo.set_remote("origin", &input.repo_url)
+                    .map_err(|e| e.to_string())?;
+                let _ = repo.set_branch("main");
+            }
+        }
+    }
+
+    Ok("Setup 완료".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -325,6 +405,9 @@ pub fn run() {
             list_skills,
             sync_push,
             sync_pull,
+            check_git,
+            get_default_device_id,
+            run_setup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
