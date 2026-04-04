@@ -61,7 +61,10 @@ function App() {
           <p className="text-sm text-gray-400">Setup</p>
         </header>
         <main className="p-6">
-          <SetupWizard onComplete={handleSetupComplete} />
+          <SetupWizard
+            onComplete={handleSetupComplete}
+            onCancel={status?.initialized ? () => setShowSetup(false) : undefined}
+          />
         </main>
       </div>
     );

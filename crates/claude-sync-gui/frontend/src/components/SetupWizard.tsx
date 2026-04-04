@@ -3,11 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 
 interface Props {
   onComplete: () => void;
+  onCancel?: () => void;
 }
 
 type Step = "welcome" | "repo" | "auth" | "options" | "progress" | "done";
 
-export default function SetupWizard({ onComplete }: Props) {
+export default function SetupWizard({ onComplete, onCancel }: Props) {
   const [step, setStep] = useState<Step>("welcome");
   const [gitVersion, setGitVersion] = useState<string | null>(null);
   const [gitError, setGitError] = useState<string | null>(null);
@@ -71,6 +72,18 @@ export default function SetupWizard({ onComplete }: Props) {
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
+      {/* Cancel bar */}
+      {onCancel && step !== "done" && step !== "progress" && (
+        <div className="flex justify-end">
+          <button
+            onClick={onCancel}
+            className="rounded px-3 py-1 text-sm text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
       {/* Progress indicator */}
       <div className="flex items-center justify-center gap-2">
         {(["welcome", "repo", "auth", "options"] as const).map((s, i) => (
