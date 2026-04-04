@@ -1,0 +1,26 @@
+[package]
+name = "claude-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI tool to sync Claude Code configuration across devices via GitHub"
+
+[[bin]]
+name = "claude-sync"
+path = "src/main.rs"
+
+[dependencies]
+claude-sync-core.workspace = true
+clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dialoguer.workspace = true
+indicatif.workspace = true
+console.workspace = true
+chrono.workspace = true
+hostname.workspace = true
+toml.workspace = true
