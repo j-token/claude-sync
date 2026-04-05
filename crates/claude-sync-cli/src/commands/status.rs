@@ -45,6 +45,14 @@ pub async fn run() -> Result<()> {
             style("OFF").red()
         }
     );
+    println!(
+        "  Plugins: {}",
+        if config.sync.sync_plugins {
+            style("ON").green()
+        } else {
+            style("OFF").red()
+        }
+    );
     println!();
 
     // 3. 파일 현황
@@ -52,6 +60,7 @@ pub async fn run() -> Result<()> {
     println!("{}", style("Discovered Files").bold());
     println!("  Syncable files: {}", discovery_result.syncable.len());
     println!("  Skills:         {}", discovery_result.skills.len());
+    println!("  Plugins:        {}", discovery_result.plugins.len());
     println!("  Skipped:        {}", discovery_result.skipped.len());
     println!();
 

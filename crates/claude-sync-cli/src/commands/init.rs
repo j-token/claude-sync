@@ -69,6 +69,11 @@ pub async fn run() -> Result<()> {
         .default(true)
         .interact()?;
 
+    let sync_plugins = Confirm::new()
+        .with_prompt("plugins 메타데이터 싱크? (설치 목록 + 소스 정보)")
+        .default(true)
+        .interact()?;
+
     // 6. 설정 저장
     let config = SyncConfig {
         schema_version: 1,
@@ -90,6 +95,7 @@ pub async fn run() -> Result<()> {
             sync_memory,
             sync_teams,
             sync_skills,
+            sync_plugins,
         },
         secret_patterns: SyncConfig::default_secret_patterns(),
         platform_path_rules: Vec::new(),

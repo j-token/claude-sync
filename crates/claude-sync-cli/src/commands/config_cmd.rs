@@ -31,6 +31,7 @@ async fn set(key: &str, value: &str) -> Result<()> {
         "sync.sync_memory" => config.sync.sync_memory = value.parse()?,
         "sync.sync_teams" => config.sync.sync_teams = value.parse()?,
         "sync.sync_skills" => config.sync.sync_skills = value.parse()?,
+        "sync.sync_plugins" => config.sync.sync_plugins = value.parse()?,
         "sync.auto_sync" => config.sync.auto_sync = value.parse()?,
         "repo.url" => config.repo.url = value.to_string(),
         "repo.branch" => config.repo.branch = value.to_string(),

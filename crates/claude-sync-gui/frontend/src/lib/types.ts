@@ -12,6 +12,8 @@ export interface SyncStatus {
   sync_memory: boolean;
   sync_teams: boolean;
   sync_skills: boolean;
+  sync_plugins: boolean;
+  plugins_count: number;
 }
 
 export interface DetectedSecret {

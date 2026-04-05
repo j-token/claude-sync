@@ -22,6 +22,7 @@ export default function SetupWizard({ onComplete, onCancel }: Props) {
   const [syncMemory, setSyncMemory] = useState(false);
   const [syncTeams, setSyncTeams] = useState(true);
   const [syncSkills, setSyncSkills] = useState(true);
+  const [syncPlugins, setSyncPlugins] = useState(true);
 
   const [setupError, setSetupError] = useState<string | null>(null);
   const [setupMessage, setSetupMessage] = useState("");
@@ -61,6 +62,7 @@ export default function SetupWizard({ onComplete, onCancel }: Props) {
           sync_memory: syncMemory,
           sync_teams: syncTeams,
           sync_skills: syncSkills,
+          sync_plugins: syncPlugins,
         },
       });
       setSetupMessage(result);
@@ -241,6 +243,19 @@ export default function SetupWizard({ onComplete, onCancel }: Props) {
               <div>
                 <p className="font-medium">Memory</p>
                 <p className="text-xs text-gray-500">Auto-memory files</p>
+              </div>
+            </label>
+
+            <label className="flex items-center gap-3 rounded-lg border border-gray-700 p-3 cursor-pointer hover:border-gray-600">
+              <input
+                type="checkbox"
+                checked={syncPlugins}
+                onChange={(e) => setSyncPlugins(e.target.checked)}
+                className="h-4 w-4 accent-blue-500"
+              />
+              <div>
+                <p className="font-medium">Plugins</p>
+                <p className="text-xs text-gray-500">Plugin install list &amp; marketplace sources (metadata only)</p>
               </div>
             </label>
           </div>

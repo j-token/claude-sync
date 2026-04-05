@@ -100,6 +100,10 @@ export default function Dashboard({ status, onRefresh }: Props) {
             <p className="font-medium">{status.skills_count}</p>
           </div>
           <div>
+            <span className="text-sm text-gray-500">Plugins</span>
+            <p className="font-medium">{status.plugins_count}</p>
+          </div>
+          <div>
             <span className="text-sm text-gray-500">Last Sync</span>
             <p className="font-medium text-sm">
               {status.last_sync ?? <span className="text-gray-500">Never</span>}
@@ -142,6 +146,9 @@ export default function Dashboard({ status, onRefresh }: Props) {
           </span>
           <span className={status.sync_skills ? "text-green-400" : "text-gray-500"}>
             Skills: {status.sync_skills ? "ON" : "OFF"}
+          </span>
+          <span className={status.sync_plugins ? "text-green-400" : "text-gray-500"}>
+            Plugins: {status.sync_plugins ? "ON" : "OFF"}
           </span>
         </div>
       </div>

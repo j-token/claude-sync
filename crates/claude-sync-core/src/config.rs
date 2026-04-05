@@ -100,6 +100,8 @@ pub struct SyncOptions {
     pub sync_teams: bool,
     #[serde(default = "default_true")]
     pub sync_skills: bool,
+    #[serde(default = "default_true")]
+    pub sync_plugins: bool,
 }
 
 fn default_interval() -> u64 {
@@ -174,6 +176,7 @@ impl Default for SyncConfig {
                 sync_memory: false,
                 sync_teams: true,
                 sync_skills: true,
+                sync_plugins: true,
             },
             secret_patterns: Self::default_secret_patterns(),
             platform_path_rules: Vec::new(),

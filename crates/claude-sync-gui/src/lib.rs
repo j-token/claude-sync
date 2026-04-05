@@ -25,6 +25,8 @@ struct SyncStatus {
     sync_memory: bool,
     sync_teams: bool,
     sync_skills: bool,
+    sync_plugins: bool,
+    plugins_count: usize,
 }
 
 /// 시크릿 탐지 결과
@@ -79,6 +81,8 @@ async fn get_status() -> Result<SyncStatus, String> {
                     sync_memory: false,
                     sync_teams: true,
                     sync_skills: true,
+                    sync_plugins: true,
+                    plugins_count: 0,
                 });
             }
         };
@@ -125,6 +129,8 @@ async fn get_status() -> Result<SyncStatus, String> {
             sync_memory: config.sync.sync_memory,
             sync_teams: config.sync.sync_teams,
             sync_skills: config.sync.sync_skills,
+            sync_plugins: config.sync.sync_plugins,
+            plugins_count: discovery_result.plugins.len(),
         })
     })
     .await
@@ -356,6 +362,7 @@ struct SetupInput {
     sync_memory: bool,
     sync_teams: bool,
     sync_skills: bool,
+    sync_plugins: bool,
 }
 
 #[tauri::command]
@@ -400,6 +407,7 @@ async fn run_setup(input: SetupInput) -> Result<String, String> {
                 sync_memory: input.sync_memory,
                 sync_teams: input.sync_teams,
                 sync_skills: input.sync_skills,
+                sync_plugins: input.sync_plugins,
             },
             secret_patterns: SyncConfig::default_secret_patterns(),
             platform_path_rules: Vec::new(),

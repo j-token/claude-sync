@@ -21,6 +21,7 @@ pub enum FileCategory {
     Memory,
     Hook,
     Team,
+    Plugin,
 }
 
 /// 싱크 가능한 파일 정보
@@ -40,6 +41,29 @@ pub struct SkillInfo {
     pub path: String,
     pub size_bytes: u64,
     pub files: Vec<String>,
+}
+
+/// 플러그인 정보 (메타데이터 기반 싱크)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginInfo {
+    /// 플러그인 식별자 (e.g., "plannotator@plannotator")
+    pub id: String,
+    /// 마켓플레이스 이름
+    pub marketplace: String,
+    /// 플러그인 이름
+    pub name: String,
+    /// 버전
+    pub version: String,
+    /// GitHub 소스 정보
+    pub source: Option<PluginSource>,
+}
+
+/// 플러그인 소스 정보
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginSource {
+    pub source_type: String,
+    pub repo: Option<String>,
+    pub url: Option<String>,
 }
 
 /// 스킬 싱크 상태 (GUI에서 사용)
@@ -88,6 +112,7 @@ pub struct SkippedFile {
 pub struct DiscoveryResult {
     pub syncable: Vec<SyncableFile>,
     pub skills: Vec<SkillInfo>,
+    pub plugins: Vec<PluginInfo>,
     pub skipped: Vec<SkippedFile>,
 }
 
@@ -95,7 +120,6 @@ pub struct DiscoveryResult {
 const NEVER_SYNC: &[&str] = &[
     ".credentials.json",
     "projects",
-    "plugins",
     "sessions",
     "history.jsonl",
     "cache",
@@ -177,7 +201,26 @@ pub fn discover(config: &SyncConfig) -> Result<DiscoveryResult> {
         skills = discover_skills(&claude_dir)?;
     }
 
-    // 6. 건너뛴 파일 목록 구성
+    // 6. 선택적 싱크: plugins (메타데이터만)
+    let mut plugins = Vec::new();
+    if config.sync.sync_plugins {
+        plugins = discover_plugins(&claude_dir)?;
+        // 플러그인 메타데이터 파일도 싱크 대상에 추가
+        discover_single_file(
+            &claude_dir,
+            "plugins/installed_plugins.json",
+            FileCategory::Plugin,
+            &mut syncable,
+        );
+        discover_single_file(
+            &claude_dir,
+            "plugins/known_marketplaces.json",
+            FileCategory::Plugin,
+            &mut syncable,
+        );
+    }
+
+    // 7. 건너뛴 파일 목록 구성
     if let Ok(entries) = std::fs::read_dir(&claude_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -200,8 +243,80 @@ pub fn discover(config: &SyncConfig) -> Result<DiscoveryResult> {
     Ok(DiscoveryResult {
         syncable,
         skills,
+        plugins,
         skipped,
     })
+}
+
+/// plugins 메타데이터에서 플러그인 목록 파싱
+fn discover_plugins(claude_dir: &Path) -> Result<Vec<PluginInfo>> {
+    let installed_path = claude_dir.join("plugins/installed_plugins.json");
+    let marketplaces_path = claude_dir.join("plugins/known_marketplaces.json");
+
+    if !installed_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    // installed_plugins.json 파싱
+    let installed_content = std::fs::read_to_string(&installed_path)
+        .map_err(|e| SyncError::Discovery(format!("Failed to read installed_plugins.json: {e}")))?;
+    let installed: serde_json::Value = serde_json::from_str(&installed_content)
+        .map_err(|e| SyncError::Discovery(format!("Failed to parse installed_plugins.json: {e}")))?;
+
+    // known_marketplaces.json 파싱 (소스 정보용)
+    let marketplaces: serde_json::Value = if marketplaces_path.exists() {
+        let content = std::fs::read_to_string(&marketplaces_path).unwrap_or_default();
+        serde_json::from_str(&content).unwrap_or(serde_json::Value::Object(Default::default()))
+    } else {
+        serde_json::Value::Object(Default::default())
+    };
+
+    let mut plugins = Vec::new();
+
+    if let Some(plugin_map) = installed.get("plugins").and_then(|p| p.as_object()) {
+        for (id, entries) in plugin_map {
+            // id 형식: "name@marketplace"
+            let parts: Vec<&str> = id.splitn(2, '@').collect();
+            let (name, marketplace) = if parts.len() == 2 {
+                (parts[0].to_string(), parts[1].to_string())
+            } else {
+                (id.clone(), "unknown".to_string())
+            };
+
+            // 최신 버전 찾기
+            let version = entries
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|e| e.get("version"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            // 마켓플레이스에서 소스 정보 찾기
+            let source = marketplaces
+                .get(&marketplace)
+                .and_then(|m| m.get("source"))
+                .map(|s| PluginSource {
+                    source_type: s
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    repo: s.get("repo").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    url: s.get("url").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                });
+
+            plugins.push(PluginInfo {
+                id: id.clone(),
+                marketplace,
+                name,
+                version,
+                source,
+            });
+        }
+    }
+
+    Ok(plugins)
 }
 
 /// skills 디렉토리의 각 스킬을 개별 식별
