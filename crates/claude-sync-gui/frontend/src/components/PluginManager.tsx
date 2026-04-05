@@ -1,11 +1,14 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand } from "../lib/backend";
 import type { PluginEntry } from "../lib/types";
 
 export default function PluginManager() {
   const [plugins, setPlugins] = useState<PluginEntry[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     loadPlugins();
@@ -15,8 +18,9 @@ export default function PluginManager() {
     setLoading(true);
     setError(null);
     try {
-      const result = await invoke<PluginEntry[]>("list_plugins");
+      const result = await invokeCommand("list_plugins");
       setPlugins(result);
+      setSelected(new Set(result.map((p) => p.id)));
     } catch (e) {
       setError(`${e}`);
     } finally {
@@ -24,106 +28,170 @@ export default function PluginManager() {
     }
   }
 
-  function getSourceLabel(plugin: PluginEntry): string {
-    if (plugin.source_repo) {
-      return plugin.source_repo;
+  async function handlePush() {
+    setSyncing(true);
+    setMessage(null);
+    try {
+      const result = await invokeCommand("push_selected_plugins", {
+        ids: Array.from(selected),
+      });
+      setMessage(result);
+      await loadPlugins();
+    } catch (e) {
+      setMessage(`Push failed: ${e}`);
+    } finally {
+      setSyncing(false);
     }
-    return plugin.source_type;
+  }
+
+  async function handlePull() {
+    setSyncing(true);
+    setMessage(null);
+    try {
+      const result = await invokeCommand("pull_selected_plugins", {
+        ids: Array.from(selected),
+      });
+      setMessage(result);
+      await loadPlugins();
+    } catch (e) {
+      setMessage(`Pull failed: ${e}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  function togglePlugin(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelected(
+      selected.size === plugins.length ? new Set() : new Set(plugins.map((p) => p.id))
+    );
   }
 
   if (loading) {
-    return <div className="p-6 text-gray-400">Loading plugins...</div>;
+    return (
+      <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-canvas-default)] p-4 text-sm text-[var(--color-fg-muted)]">
+        Loading plugins...
+      </div>
+    );
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Plugin Manager</h2>
-        <button
-          onClick={loadPlugins}
-          className="rounded px-3 py-1 text-sm text-gray-400 hover:bg-gray-800 transition-colors"
-        >
-          Refresh
-        </button>
-      </div>
-
-      <p className="text-sm text-gray-400">
-        Plugin metadata (install list &amp; sources) is synced. Other devices can reinstall from this data.
-      </p>
-
+    <div className="space-y-3">
+      {/* Error / message banners */}
       {error && (
-        <div className="rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-400">
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
           {error}
         </div>
       )}
-
-      {plugins.length === 0 ? (
-        <p className="text-gray-500">No plugins installed</p>
-      ) : (
-        <div className="space-y-1">
-          {plugins.map((plugin) => (
-            <div
-              key={plugin.id}
-              className="flex items-center gap-3 rounded-lg border border-gray-800 bg-gray-900 p-3"
-            >
-              {/* Status indicator */}
-              <div
-                className={`h-2.5 w-2.5 rounded-full ${
-                  plugin.enabled ? "bg-green-500" : "bg-gray-600"
-                }`}
-                title={plugin.enabled ? "Enabled" : "Disabled"}
-              />
-
-              {/* Plugin info */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{plugin.name}</span>
-                  <span className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-400">
-                    v{plugin.version}
-                  </span>
-                  {plugin.enabled ? (
-                    <span className="rounded bg-green-900 px-1.5 py-0.5 text-xs text-green-300">
-                      Enabled
-                    </span>
-                  ) : (
-                    <span className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-500">
-                      Disabled
-                    </span>
-                  )}
-                </div>
-                <div className="mt-0.5 flex items-center gap-2 text-xs text-gray-500">
-                  <span>{plugin.marketplace}</span>
-                  <span>&middot;</span>
-                  <span className="truncate">{getSourceLabel(plugin)}</span>
-                </div>
-              </div>
-            </div>
-          ))}
+      {message && (
+        <div
+          className={`rounded-md border px-3 py-2 text-sm ${
+            message.toLowerCase().includes("fail")
+              ? "border-red-200 bg-red-50 text-red-800"
+              : "border-emerald-200 bg-emerald-50 text-emerald-800"
+          }`}
+        >
+          {message}
         </div>
       )}
 
-      {/* Summary */}
-      {plugins.length > 0 && (
-        <div className="rounded-lg border border-gray-800 bg-gray-900/50 p-3 text-sm text-gray-400">
-          <div className="flex gap-4">
-            <span>
-              Total: <strong className="text-gray-200">{plugins.length}</strong>
-            </span>
-            <span>
-              Enabled:{" "}
-              <strong className="text-green-400">
-                {plugins.filter((p) => p.enabled).length}
-              </strong>
-            </span>
-            <span>
-              Disabled:{" "}
-              <strong className="text-gray-500">
-                {plugins.filter((p) => !p.enabled).length}
-              </strong>
+      {/* Table */}
+      <div className="overflow-hidden rounded-md border border-[var(--color-border-default)] bg-[var(--color-canvas-default)]">
+        {/* Table header */}
+        <div className="flex items-center justify-between border-b border-[var(--color-border-default)] bg-[var(--color-canvas-subtle)] px-4 py-2.5">
+          <div className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={selected.size === plugins.length && plugins.length > 0}
+              onChange={toggleAll}
+              className="h-3.5 w-3.5 rounded accent-[var(--color-accent-fg)]"
+            />
+            <span className="text-sm font-semibold text-[var(--color-fg-default)]">
+              {selected.size > 0 ? `${selected.size} selected` : `${plugins.length} plugins`}
             </span>
           </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={loadPlugins}
+              className="rounded-md border border-[var(--color-btn-border)] bg-[var(--color-btn-bg)] px-2.5 py-1 text-xs font-medium text-[var(--color-fg-default)] hover:bg-[var(--color-btn-hover-bg)]"
+            >
+              Refresh
+            </button>
+            <button
+              onClick={handlePull}
+              disabled={selected.size === 0 || syncing}
+              className="rounded-md border border-[var(--color-btn-border)] bg-[var(--color-btn-bg)] px-2.5 py-1 text-xs font-medium text-[var(--color-fg-default)] hover:bg-[var(--color-btn-hover-bg)] disabled:opacity-50"
+            >
+              Pull ({selected.size})
+            </button>
+            <button
+              onClick={handlePush}
+              disabled={selected.size === 0 || syncing}
+              className="rounded-md bg-[var(--color-btn-primary-bg)] px-2.5 py-1 text-xs font-medium text-white hover:bg-[var(--color-btn-primary-hover-bg)] disabled:opacity-50"
+            >
+              Push ({selected.size})
+            </button>
+          </div>
         </div>
-      )}
+
+        {/* Rows */}
+        {plugins.length === 0 ? (
+          <div className="px-4 py-8 text-center text-sm text-[var(--color-fg-muted)]">
+            No plugins installed.
+          </div>
+        ) : (
+          <div className="divide-y divide-[var(--color-border-muted)]">
+            {plugins.map((plugin) => (
+              <label
+                key={plugin.id}
+                className="flex cursor-pointer items-center gap-4 px-4 py-2.5 transition hover:bg-[var(--color-canvas-subtle)]"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.has(plugin.id)}
+                  onChange={() => togglePlugin(plugin.id)}
+                  className="h-3.5 w-3.5 shrink-0 rounded accent-[var(--color-accent-fg)]"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-[var(--color-accent-fg)]">
+                      {plugin.name}
+                    </span>
+                    <span className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-canvas-subtle)] px-1.5 py-0.5 text-xs text-[var(--color-fg-muted)]">
+                      v{plugin.version}
+                    </span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                        plugin.enabled
+                          ? "bg-emerald-100 text-emerald-800"
+                          : "bg-gray-100 text-[var(--color-fg-muted)]"
+                      }`}
+                    >
+                      {plugin.enabled ? "Enabled" : "Disabled"}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 truncate text-xs text-[var(--color-fg-muted)]">
+                    {plugin.source_repo ?? plugin.source_type}
+                  </div>
+                </div>
+                <span className="hidden shrink-0 text-xs text-[var(--color-fg-muted)] sm:block">
+                  {plugin.marketplace}
+                </span>
+                <span className="hidden shrink-0 text-xs text-[var(--color-fg-muted)] sm:block">
+                  {plugin.source_type}
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
