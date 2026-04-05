@@ -4,7 +4,8 @@ use claude_sync_core::config::{
 };
 use claude_sync_core::discovery;
 use claude_sync_core::git_ops::{self, GitRepo};
-use claude_sync_core::manifest::SyncManifest;
+use claude_sync_core::manifest::{self, ManifestEntry, SyncManifest};
+use claude_sync_core::platform;
 use claude_sync_core::secret::SecretEngine;
 use claude_sync_core::snapshot;
 use serde::{Deserialize, Serialize};
@@ -300,6 +301,254 @@ async fn list_plugins() -> Result<Vec<PluginEntry>, String> {
     .await
 }
 
+/// 선택된 스킬만 Push (로컬 → 레포)
+#[tauri::command]
+async fn push_selected_skills(names: Vec<String>) -> Result<String, String> {
+    blocking(move || {
+        let config = SyncConfig::load().map_err(|e| e.to_string())?;
+        let discovery_result = discovery::discover(&config).map_err(|e| e.to_string())?;
+        let repo_path = SyncConfig::repo_path();
+        let claude_dir = SyncConfig::claude_dir();
+
+        let mut count = 0;
+        for skill in &discovery_result.skills {
+            if !names.contains(&skill.name) {
+                continue;
+            }
+            let src = claude_dir.join(&skill.path);
+            let dst = repo_path.join(&skill.path);
+            if src.exists() {
+                copy_dir_recursive(&src, &dst)?;
+                count += 1;
+            }
+        }
+
+        // git commit & push
+        let repo = GitRepo::open_or_init(&repo_path).map_err(|e| e.to_string())?;
+        repo.add_all().map_err(|e| e.to_string())?;
+        let message = format!(
+            "sync skills [{}]: {} @ {}",
+            names.join(", "),
+            config.device.id,
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+        );
+        let _ = repo.commit(&message);
+        let _ = repo.push_with_recovery("origin", &config.repo.branch, &config);
+
+        Ok(format!("{count}개 스킬 Push 완료"))
+    })
+    .await
+}
+
+/// 선택된 스킬만 Pull (레포 → 로컬)
+#[tauri::command]
+async fn pull_selected_skills(names: Vec<String>) -> Result<String, String> {
+    blocking(move || {
+        let config = SyncConfig::load().map_err(|e| e.to_string())?;
+        let repo_path = SyncConfig::repo_path();
+        let claude_dir = SyncConfig::claude_dir();
+
+        // 먼저 원격에서 최신 가져오기
+        let repo = GitRepo::open_or_init(&repo_path).map_err(|e| e.to_string())?;
+        repo.ensure_remote("origin", &config).map_err(|e| e.to_string())?;
+        let _ = repo.pull("origin", &config.repo.branch);
+
+        let skills_src = repo_path.join("skills");
+        let skills_dst = claude_dir.join("skills");
+        let mut count = 0;
+
+        if skills_src.exists() {
+            for entry in std::fs::read_dir(&skills_src).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                if entry.path().is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !names.contains(&name) {
+                        continue;
+                    }
+                    let dst = skills_dst.join(&name);
+                    copy_dir_recursive(&entry.path(), &dst)?;
+                    count += 1;
+                }
+            }
+        }
+
+        Ok(format!("{count}개 스킬 Pull 완료"))
+    })
+    .await
+}
+
+/// 선택된 플러그인만 Push (로컬 installed_plugins.json에서 선택된 항목만 레포에 기록)
+#[tauri::command]
+async fn push_selected_plugins(ids: Vec<String>) -> Result<String, String> {
+    blocking(move || {
+        let config = SyncConfig::load().map_err(|e| e.to_string())?;
+        let repo_path = SyncConfig::repo_path();
+        let claude_dir = SyncConfig::claude_dir();
+
+        // 로컬 installed_plugins.json 읽기
+        let installed_path = claude_dir.join("plugins/installed_plugins.json");
+        if !installed_path.exists() {
+            return Ok("플러그인 파일이 없습니다".to_string());
+        }
+
+        let content = std::fs::read_to_string(&installed_path).map_err(|e| e.to_string())?;
+        let installed: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+        // 선택된 플러그인만 필터링
+        let filtered = filter_plugins_json(&installed, &ids);
+
+        // 레포에 필터링된 파일 저장
+        let dst_dir = repo_path.join("plugins");
+        std::fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
+        let dst_path = dst_dir.join("installed_plugins.json");
+        let output = serde_json::to_string_pretty(&filtered).map_err(|e| e.to_string())?;
+        std::fs::write(&dst_path, output).map_err(|e| e.to_string())?;
+
+        // known_marketplaces.json도 복사
+        let marketplaces_src = claude_dir.join("plugins/known_marketplaces.json");
+        if marketplaces_src.exists() {
+            let marketplaces_dst = dst_dir.join("known_marketplaces.json");
+            std::fs::copy(&marketplaces_src, &marketplaces_dst).map_err(|e| e.to_string())?;
+        }
+
+        // git commit & push
+        let repo = GitRepo::open_or_init(&repo_path).map_err(|e| e.to_string())?;
+        repo.add_all().map_err(|e| e.to_string())?;
+        let message = format!(
+            "sync plugins [{}]: {} @ {}",
+            ids.len(),
+            config.device.id,
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+        );
+        let _ = repo.commit(&message);
+        let _ = repo.push_with_recovery("origin", &config.repo.branch, &config);
+
+        Ok(format!("{}개 플러그인 Push 완료", ids.len()))
+    })
+    .await
+}
+
+/// 선택된 플러그인만 Pull (레포 → 로컬 installed_plugins.json에 병합)
+#[tauri::command]
+async fn pull_selected_plugins(ids: Vec<String>) -> Result<String, String> {
+    blocking(move || {
+        let config = SyncConfig::load().map_err(|e| e.to_string())?;
+        let repo_path = SyncConfig::repo_path();
+        let claude_dir = SyncConfig::claude_dir();
+
+        // 먼저 원격에서 최신 가져오기
+        let repo = GitRepo::open_or_init(&repo_path).map_err(|e| e.to_string())?;
+        repo.ensure_remote("origin", &config).map_err(|e| e.to_string())?;
+        let _ = repo.pull("origin", &config.repo.branch);
+
+        // 레포의 installed_plugins.json 읽기
+        let remote_path = repo_path.join("plugins/installed_plugins.json");
+        if !remote_path.exists() {
+            return Ok("원격에 플러그인 데이터가 없습니다".to_string());
+        }
+
+        let remote_content = std::fs::read_to_string(&remote_path).map_err(|e| e.to_string())?;
+        let remote_json: serde_json::Value =
+            serde_json::from_str(&remote_content).map_err(|e| e.to_string())?;
+
+        // 선택된 플러그인만 필터링
+        let filtered_remote = filter_plugins_json(&remote_json, &ids);
+
+        // 로컬 installed_plugins.json에 병합
+        let local_path = claude_dir.join("plugins/installed_plugins.json");
+        let local_json: serde_json::Value = if local_path.exists() {
+            let content = std::fs::read_to_string(&local_path).map_err(|e| e.to_string())?;
+            serde_json::from_str(&content).map_err(|e| e.to_string())?
+        } else {
+            serde_json::json!({"plugins": {}})
+        };
+
+        let merged = merge_plugins_json(&local_json, &filtered_remote);
+
+        std::fs::create_dir_all(claude_dir.join("plugins")).map_err(|e| e.to_string())?;
+        let output = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
+        std::fs::write(&local_path, output).map_err(|e| e.to_string())?;
+
+        // known_marketplaces.json도 복사
+        let remote_mp = repo_path.join("plugins/known_marketplaces.json");
+        if remote_mp.exists() {
+            let local_mp = claude_dir.join("plugins/known_marketplaces.json");
+            std::fs::copy(&remote_mp, &local_mp).map_err(|e| e.to_string())?;
+        }
+
+        Ok(format!("{}개 플러그인 Pull 완료", ids.len()))
+    })
+    .await
+}
+
+/// installed_plugins.json에서 선택된 plugin ID만 남기는 필터
+fn filter_plugins_json(json: &serde_json::Value, ids: &[String]) -> serde_json::Value {
+    let mut result = json.clone();
+    if let Some(plugins) = result.get_mut("plugins").and_then(|p| p.as_object_mut()) {
+        let keys_to_remove: Vec<String> = plugins
+            .keys()
+            .filter(|k| !ids.contains(k))
+            .cloned()
+            .collect();
+        for key in keys_to_remove {
+            plugins.remove(&key);
+        }
+    }
+    result
+}
+
+/// 로컬 installed_plugins.json에 원격의 선택된 플러그인을 병합
+fn merge_plugins_json(
+    local: &serde_json::Value,
+    remote_filtered: &serde_json::Value,
+) -> serde_json::Value {
+    let mut result = local.clone();
+    if let (Some(local_plugins), Some(remote_plugins)) = (
+        result.get_mut("plugins").and_then(|p| p.as_object_mut()),
+        remote_filtered.get("plugins").and_then(|p| p.as_object()),
+    ) {
+        for (key, value) in remote_plugins {
+            local_plugins.insert(key.clone(), value.clone());
+        }
+    }
+    result
+}
+
+/// 디렉토리를 재귀적으로 복사 (node_modules, .git, target 제외)
+/// GitHub 파일 크기 제한(100MB)보다 낮은 안전 한계
+const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50MB
+
+/// 디렉토리를 재귀적으로 복사 (대용량 바이너리 및 빌드 산출물 제외)
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        if matches!(
+            name.as_str(),
+            "node_modules" | ".git" | "target" | "bin" | "obj" | "dist" | "build"
+        ) {
+            continue;
+        }
+
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            // 대용량 파일 스킵 (GitHub 100MB 제한 방지)
+            let metadata = std::fs::metadata(&src_path).map_err(|e| e.to_string())?;
+            if metadata.len() > MAX_FILE_SIZE {
+                continue;
+            }
+            std::fs::copy(&src_path, &dst_path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn sync_push() -> Result<String, String> {
     blocking(|| {
@@ -311,6 +560,10 @@ async fn sync_push() -> Result<String, String> {
 
         snapshot::create_snapshot().map_err(|e| e.to_string())?;
 
+        // manifest 생성 — push 후 pull이 이 파일을 참조하여 동기화 수행
+        let mut sync_manifest =
+            SyncManifest::new(&config.device.id, config.device.platform.clone());
+
         for file in &discovery_result.syncable {
             let src = claude_dir.join(&file.relative_path);
             let dst = repo_path.join(&file.relative_path);
@@ -321,12 +574,18 @@ async fn sync_push() -> Result<String, String> {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
 
+            let content = std::fs::read(&src).map_err(|e| e.to_string())?;
+            let sha256 = manifest::compute_sha256(&content);
+            let mut masked_secrets = Vec::new();
+            let mut platform_specific = Vec::new();
+
             match file.category {
                 discovery::FileCategory::Settings | discovery::FileCategory::McpJson => {
-                    let content = std::fs::read(&src).map_err(|e| e.to_string())?;
                     let json: serde_json::Value =
                         serde_json::from_slice(&content).map_err(|e| e.to_string())?;
-                    let (masked, _) = secret_engine.mask(&json);
+                    let (masked, matches) = secret_engine.mask(&json);
+                    masked_secrets = matches.iter().map(|m| m.json_path.clone()).collect();
+                    platform_specific = platform::detect_platform_paths(&json);
                     let output =
                         serde_json::to_string_pretty(&masked).map_err(|e| e.to_string())?;
                     std::fs::write(&dst, output).map_err(|e| e.to_string())?;
@@ -335,7 +594,29 @@ async fn sync_push() -> Result<String, String> {
                     std::fs::copy(&src, &dst).map_err(|e| e.to_string())?;
                 }
             }
+
+            sync_manifest.upsert_entry(ManifestEntry {
+                path: file.relative_path.clone(),
+                sha256,
+                category: file.category.clone(),
+                masked_secrets,
+                platform_specific,
+            });
         }
+
+        // Skills 복사
+        for skill in &discovery_result.skills {
+            let skill_src = claude_dir.join(&skill.path);
+            let skill_dst = repo_path.join(&skill.path);
+            if skill_src.exists() {
+                copy_dir_recursive(&skill_src, &skill_dst)?;
+            }
+        }
+
+        // manifest 저장
+        sync_manifest
+            .save(&repo_path.join("manifest.json"))
+            .map_err(|e| e.to_string())?;
 
         let repo = GitRepo::open_or_init(&repo_path).map_err(|e| e.to_string())?;
         repo.add_all().map_err(|e| e.to_string())?;
@@ -346,10 +627,15 @@ async fn sync_push() -> Result<String, String> {
             chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
         );
         let _ = repo.commit(&message);
-        repo.push("origin", &config.repo.branch)
+        let result = repo
+            .push_with_recovery("origin", &config.repo.branch, &config)
             .map_err(|e| e.to_string())?;
 
-        Ok("Push 완료".to_string())
+        if result.recovery_applied {
+            Ok(format!("Push 완료 ({})", result.message))
+        } else {
+            Ok("Push 완료".to_string())
+        }
     })
     .await
 }
@@ -364,6 +650,8 @@ async fn sync_pull() -> Result<String, String> {
         snapshot::create_snapshot().map_err(|e| e.to_string())?;
 
         let repo = GitRepo::open_or_init(&repo_path).map_err(|e| e.to_string())?;
+        // pull 전에 remote가 설정되어 있는지 확인 및 자동 복구
+        repo.ensure_remote("origin", &config).map_err(|e| e.to_string())?;
         repo.pull("origin", &config.repo.branch)
             .map_err(|e| e.to_string())?;
 
@@ -413,6 +701,22 @@ async fn sync_pull() -> Result<String, String> {
             }
         }
 
+        // Skills 복원 (CLI pull.rs와 동일)
+        if config.sync.sync_skills {
+            let skills_src = repo_path.join("skills");
+            if skills_src.exists() {
+                let skills_dst = claude_dir.join("skills");
+                for entry in std::fs::read_dir(&skills_src).map_err(|e| e.to_string())? {
+                    let entry = entry.map_err(|e| e.to_string())?;
+                    if entry.path().is_dir() {
+                        let dst = skills_dst.join(entry.file_name());
+                        copy_dir_recursive(&entry.path(), &dst)?;
+                        count += 1;
+                    }
+                }
+            }
+        }
+
         Ok(format!("Pull 완료: {} files", count))
     })
     .await
@@ -428,6 +732,30 @@ struct SetupInput {
     sync_teams: bool,
     sync_skills: bool,
     sync_plugins: bool,
+}
+
+/// Sync 옵션 업데이트 입력값
+#[derive(Deserialize)]
+struct SyncOptionsInput {
+    sync_memory: bool,
+    sync_teams: bool,
+    sync_skills: bool,
+    sync_plugins: bool,
+}
+
+/// 개별 Sync 옵션만 업데이트 (설정 페이지에서 스위치 토글 시 호출)
+#[tauri::command]
+async fn update_sync_options(input: SyncOptionsInput) -> Result<String, String> {
+    blocking(move || {
+        let mut config = SyncConfig::load().map_err(|e| e.to_string())?;
+        config.sync.sync_memory = input.sync_memory;
+        config.sync.sync_teams = input.sync_teams;
+        config.sync.sync_skills = input.sync_skills;
+        config.sync.sync_plugins = input.sync_plugins;
+        config.save().map_err(|e| e.to_string())?;
+        Ok("Sync options updated".to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -592,12 +920,17 @@ pub fn run() {
             list_plugins,
             sync_push,
             sync_pull,
+            push_selected_skills,
+            pull_selected_skills,
+            push_selected_plugins,
+            pull_selected_plugins,
             check_git,
             get_default_device_id,
             run_setup,
             check_auth_status,
             login_with_token,
             login_with_gh_cli,
+            update_sync_options,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

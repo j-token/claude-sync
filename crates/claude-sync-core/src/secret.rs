@@ -85,12 +85,15 @@ impl SecretEngine {
     }
 
     /// 마스킹된 JSON에 로컬 시크릿 값 복원
+    ///
+    /// local JSON에서 시크릿 경로를 탐지한 뒤, masked JSON의 해당 경로에
+    /// 로컬 값을 복원한다. masked JSON은 빈 문자열("")이므로 detect()가
+    /// 작동하지 않기 때문에 반드시 local 기준으로 탐지해야 한다.
     pub fn unmask(&self, masked: &Value, local: &Value) -> Value {
-        let matches = self.detect(masked);
+        let matches = self.detect(local);
         let mut result = masked.clone();
 
         for m in &matches {
-            // 로컬에 해당 경로의 값이 있으면 그 값을 사용
             if let Some(local_value) = get_json_value(local, &m.json_path) {
                 if let Value::String(s) = local_value {
                     if !s.is_empty() {

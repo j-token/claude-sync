@@ -151,6 +151,8 @@ async fn pull_skills(_config: &SyncConfig, names: &[String]) -> Result<()> {
     Ok(())
 }
 
+const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
+
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -159,13 +161,19 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
         let dst_path = dst.join(entry.file_name());
 
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == "node_modules" || name == ".git" || name == "target" {
+        if matches!(
+            name.as_str(),
+            "node_modules" | ".git" | "target" | "bin" | "obj" | "dist" | "build"
+        ) {
             continue;
         }
 
         if src_path.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
+            if std::fs::metadata(&src_path)?.len() > MAX_FILE_SIZE {
+                continue;
+            }
             std::fs::copy(&src_path, &dst_path)?;
         }
     }

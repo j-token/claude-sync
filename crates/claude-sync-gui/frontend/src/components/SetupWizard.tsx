@@ -1,31 +1,39 @@
 import { useState, useEffect, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import type { AuthStatusInfo } from "../lib/types";
+import { invokeCommand } from "../lib/backend";
+import type { AuthStatusInfo, SyncStatus } from "../lib/types";
 
 interface Props {
   onComplete: () => void;
   onCancel?: () => void;
+  /** 현재 SyncStatus — 이미 초기화된 상태에서 설정 편집 시 전달 */
+  status?: SyncStatus | null;
 }
 
-type Step = "welcome" | "repo" | "auth" | "options" | "progress" | "done";
+export default function Settings({ onComplete, onCancel, status }: Props) {
+  const isInitialized = !!status?.initialized;
 
-export default function SetupWizard({ onComplete, onCancel }: Props) {
-  const [step, setStep] = useState<Step>("welcome");
+  /* ---- Prerequisites ---- */
   const [gitVersion, setGitVersion] = useState<string | null>(null);
   const [gitError, setGitError] = useState<string | null>(null);
   const [defaultDeviceId, setDefaultDeviceId] = useState("my-device");
 
-  // Form state
-  const [repoUrl, setRepoUrl] = useState("git@github.com:");
-  const [authMethod, setAuthMethod] = useState("ssh_agent");
-  const [deviceId, setDeviceId] = useState("");
-  const [syncMemory, setSyncMemory] = useState(false);
-  const [syncTeams, setSyncTeams] = useState(true);
-  const [syncSkills, setSyncSkills] = useState(true);
-  const [syncPlugins, setSyncPlugins] = useState(true);
+  /* ---- Repository ---- */
+  const [repoUrl, setRepoUrl] = useState(status?.repo_url || "git@github.com:");
 
-  const [setupError, setSetupError] = useState<string | null>(null);
-  const [setupMessage, setSetupMessage] = useState("");
+  /* ---- Authentication ---- */
+  const [authMethod, setAuthMethod] = useState("ssh_agent");
+  const [deviceId, setDeviceId] = useState(status?.device_id || "");
+
+  /* ---- Sync Options ---- */
+  const [syncMemory, setSyncMemory] = useState(status?.sync_memory ?? false);
+  const [syncTeams, setSyncTeams] = useState(status?.sync_teams ?? true);
+  const [syncSkills, setSyncSkills] = useState(status?.sync_skills ?? true);
+  const [syncPlugins, setSyncPlugins] = useState(status?.sync_plugins ?? true);
+
+  /* ---- UI State ---- */
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     checkPrerequisites();
@@ -33,28 +41,27 @@ export default function SetupWizard({ onComplete, onCancel }: Props) {
 
   async function checkPrerequisites() {
     try {
-      const version = await invoke<string>("check_git");
+      const version = await invokeCommand("check_git");
       setGitVersion(version);
     } catch (e) {
       setGitError(`${e}`);
     }
-
     try {
-      const id = await invoke<string>("get_default_device_id");
+      const id = await invokeCommand("get_default_device_id");
       setDefaultDeviceId(id);
-      setDeviceId(id);
+      if (!deviceId) setDeviceId(id);
     } catch {
       // ignore
     }
   }
 
+  /** 초기 셋업 실행 */
   async function handleSetup() {
-    setStep("progress");
-    setSetupError(null);
-    setSetupMessage("Initializing...");
-
+    setSaving(true);
+    setError(null);
+    setMessage(null);
     try {
-      const result = await invoke<string>("run_setup", {
+      const result = await invokeCommand("run_setup", {
         input: {
           repo_url: repoUrl,
           auth_method: authMethod,
@@ -65,244 +72,184 @@ export default function SetupWizard({ onComplete, onCancel }: Props) {
           sync_plugins: syncPlugins,
         },
       });
-      setSetupMessage(result);
-      setStep("done");
+      setMessage(result);
+      setTimeout(() => onComplete(), 800);
     } catch (e) {
-      setSetupError(`${e}`);
-      setStep("options");
+      setError(`${e}`);
+    } finally {
+      setSaving(false);
     }
   }
 
+  /** Sync 옵션만 즉시 업데이트 (이미 초기화된 상태) */
+  async function handleUpdateSyncOptions(
+    memory: boolean,
+    teams: boolean,
+    skills: boolean,
+    plugins: boolean,
+  ) {
+    try {
+      await invokeCommand("update_sync_options", {
+        input: {
+          sync_memory: memory,
+          sync_teams: teams,
+          sync_skills: skills,
+          sync_plugins: plugins,
+        },
+      });
+    } catch (e) {
+      setError(`${e}`);
+    }
+  }
+
+  /** 스위치 토글 핸들러 — 상태 업데이트 + 초기화 완료 시 즉시 저장 */
+  function toggleOption(
+    key: "memory" | "teams" | "skills" | "plugins",
+    value: boolean,
+  ) {
+    const next = {
+      memory: key === "memory" ? value : syncMemory,
+      teams: key === "teams" ? value : syncTeams,
+      skills: key === "skills" ? value : syncSkills,
+      plugins: key === "plugins" ? value : syncPlugins,
+    };
+    setSyncMemory(next.memory);
+    setSyncTeams(next.teams);
+    setSyncSkills(next.skills);
+    setSyncPlugins(next.plugins);
+
+    if (isInitialized) {
+      handleUpdateSyncOptions(next.memory, next.teams, next.skills, next.plugins);
+    }
+  }
+
+  const canInitialize =
+    gitVersion && repoUrl && repoUrl !== "git@github.com:";
+
   return (
-    <div className="mx-auto max-w-lg space-y-6">
-      {/* Cancel bar */}
-      {onCancel && step !== "done" && step !== "progress" && (
-        <div className="flex justify-end">
+    <div className="mx-auto max-w-2xl space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-[var(--color-fg-default)]">
+          Settings
+        </h2>
+        {onCancel && (
           <button
             onClick={onCancel}
-            className="rounded px-3 py-1 text-sm text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+            className="rounded-md border border-[var(--color-btn-border)] bg-[var(--color-btn-bg)] px-3 py-1.5 text-xs font-medium text-[var(--color-fg-muted)] hover:bg-[var(--color-btn-hover-bg)] hover:text-[var(--color-fg-default)]"
           >
-            Cancel
+            Close
           </button>
-        </div>
-      )}
-
-      {/* Progress indicator */}
-      <div className="flex items-center justify-center gap-2">
-        {(["welcome", "repo", "auth", "options"] as const).map((s, i) => (
-          <div key={s} className="flex items-center gap-2">
-            <div
-              className={`h-2.5 w-2.5 rounded-full ${
-                step === s
-                  ? "bg-blue-500"
-                  : ["welcome", "repo", "auth", "options"].indexOf(step) > i ||
-                      step === "progress" ||
-                      step === "done"
-                    ? "bg-green-500"
-                    : "bg-gray-700"
-              }`}
-            />
-            {i < 3 && <div className="h-px w-8 bg-gray-700" />}
-          </div>
-        ))}
+        )}
       </div>
 
-      {/* Step: Welcome */}
-      {step === "welcome" && (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-8 text-center">
-          <h2 className="text-2xl font-bold">Welcome to Claude Sync</h2>
-          <p className="mt-3 text-gray-400">
-            Sync your Claude Code configuration across devices via GitHub.
+      {/* Prerequisites */}
+      <Section title="Prerequisites" description="Git 설치 상태를 확인합니다.">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <StatusCard
+            label="Git"
+            value={gitVersion ?? "Checking..."}
+            ok={!!gitVersion}
+            error={gitError}
+          />
+          <StatusCard
+            label="Device"
+            value={deviceId || defaultDeviceId}
+            ok
+          />
+        </div>
+      </Section>
+
+      {/* Repository */}
+      <Section title="Repository" description="동기화할 GitHub 저장소 URL을 입력합니다.">
+        <label className="block">
+          <span className="text-sm font-medium text-[var(--color-fg-default)]">URL</span>
+          <input
+            type="text"
+            value={repoUrl}
+            onChange={(e) => setRepoUrl(e.target.value)}
+            placeholder="git@github.com:user/claude-config.git"
+            disabled={isInitialized}
+            className="mt-1.5 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-canvas-default)] px-3 py-2 text-sm disabled:opacity-60"
+          />
+        </label>
+        {isInitialized && (
+          <p className="mt-1.5 text-xs text-[var(--color-fg-subtle)]">
+            저장소 URL은 초기 설정 이후 변경할 수 없습니다.
           </p>
+        )}
+      </Section>
 
-          <div className="mt-6 space-y-2 text-left text-sm">
-            <div className="flex items-center gap-2">
-              {gitVersion ? (
-                <>
-                  <span className="text-green-400">&#10003;</span>
-                  <span className="text-gray-300">{gitVersion}</span>
-                </>
-              ) : gitError ? (
-                <>
-                  <span className="text-red-400">&#10007;</span>
-                  <span className="text-red-400">Git not found. Please install git first.</span>
-                </>
-              ) : (
-                <span className="text-gray-500">Checking git...</span>
-              )}
-            </div>
-          </div>
+      {/* Authentication */}
+      <AuthSection
+        authMethod={authMethod}
+        setAuthMethod={setAuthMethod}
+        deviceId={deviceId}
+        setDeviceId={setDeviceId}
+        defaultDeviceId={defaultDeviceId}
+        repoUrl={repoUrl}
+        isInitialized={isInitialized}
+      />
 
-          <button
-            onClick={() => setStep("repo")}
-            disabled={!gitVersion}
-            className="mt-6 w-full rounded-lg bg-blue-600 px-4 py-3 font-medium hover:bg-blue-500 disabled:opacity-50 transition-colors"
-          >
-            Get Started
-          </button>
+      {/* Sync Options */}
+      <Section title="Sync Options" description="동기화할 데이터 종류를 선택합니다.">
+        <div className="divide-y divide-[var(--color-border-muted)] rounded-md border border-[var(--color-border-default)]">
+          <ToggleRow
+            label="Skills"
+            detail="스킬 폴더 동기화"
+            checked={syncSkills}
+            onChange={(v) => toggleOption("skills", v)}
+          />
+          <ToggleRow
+            label="Teams"
+            detail="팀 설정 동기화"
+            checked={syncTeams}
+            onChange={(v) => toggleOption("teams", v)}
+          />
+          <ToggleRow
+            label="Memory"
+            detail="자동 메모리 파일 동기화"
+            checked={syncMemory}
+            onChange={(v) => toggleOption("memory", v)}
+          />
+          <ToggleRow
+            label="Plugins"
+            detail="플러그인 메타데이터 동기화"
+            checked={syncPlugins}
+            onChange={(v) => toggleOption("plugins", v)}
+          />
+        </div>
+      </Section>
+
+      {/* Messages */}
+      {error && (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {error}
+        </div>
+      )}
+      {message && (
+        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          {message}
         </div>
       )}
 
-      {/* Step: Repository */}
-      {step === "repo" && (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-8">
-          <h2 className="text-xl font-bold">GitHub Repository</h2>
-          <p className="mt-2 text-sm text-gray-400">
-            Enter the URL of a private GitHub repository to store your config.
-          </p>
-
-          <label className="mt-4 block">
-            <span className="text-sm text-gray-400">Repository URL</span>
-            <input
-              type="text"
-              value={repoUrl}
-              onChange={(e) => setRepoUrl(e.target.value)}
-              placeholder="git@github.com:user/claude-config.git"
-              className="mt-1 w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-            />
-          </label>
-
-          <p className="mt-2 text-xs text-gray-500">
-            Tip: Create a new private repo on GitHub, then paste the SSH or HTTPS URL here.
-          </p>
-
-          <div className="mt-6 flex gap-3">
+      {/* Actions */}
+      {!isInitialized && (
+        <div className="flex justify-end gap-2 border-t border-[var(--color-border-muted)] pt-4">
+          {onCancel && (
             <button
-              onClick={() => setStep("welcome")}
-              className="rounded-lg border border-gray-700 px-4 py-2 text-sm hover:bg-gray-800 transition-colors"
+              onClick={onCancel}
+              className="rounded-md border border-[var(--color-btn-border)] bg-[var(--color-btn-bg)] px-4 py-2 text-sm font-medium text-[var(--color-fg-default)] hover:bg-[var(--color-btn-hover-bg)]"
             >
-              Back
+              Cancel
             </button>
-            <button
-              onClick={() => setStep("auth")}
-              disabled={!repoUrl || repoUrl === "git@github.com:"}
-              className="flex-1 rounded-lg bg-blue-600 px-4 py-2 font-medium hover:bg-blue-500 disabled:opacity-50 transition-colors"
-            >
-              Next
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Step: Auth & Device */}
-      {step === "auth" && (
-        <AuthStep
-          authMethod={authMethod}
-          setAuthMethod={setAuthMethod}
-          deviceId={deviceId}
-          setDeviceId={setDeviceId}
-          defaultDeviceId={defaultDeviceId}
-          repoUrl={repoUrl}
-          onBack={() => setStep("repo")}
-          onNext={() => setStep("options")}
-        />
-      )}
-
-      {/* Step: Sync Options */}
-      {step === "options" && (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-8">
-          <h2 className="text-xl font-bold">Sync Options</h2>
-          <p className="mt-2 text-sm text-gray-400">
-            Choose what to sync. Settings, rules, commands, and agents are always synced.
-          </p>
-
-          <div className="mt-4 space-y-3">
-            <label className="flex items-center gap-3 rounded-lg border border-gray-700 p-3 cursor-pointer hover:border-gray-600">
-              <input
-                type="checkbox"
-                checked={syncSkills}
-                onChange={(e) => setSyncSkills(e.target.checked)}
-                className="h-4 w-4 accent-blue-500"
-              />
-              <div>
-                <p className="font-medium">Skills</p>
-                <p className="text-xs text-gray-500">All installed skills</p>
-              </div>
-            </label>
-
-            <label className="flex items-center gap-3 rounded-lg border border-gray-700 p-3 cursor-pointer hover:border-gray-600">
-              <input
-                type="checkbox"
-                checked={syncTeams}
-                onChange={(e) => setSyncTeams(e.target.checked)}
-                className="h-4 w-4 accent-blue-500"
-              />
-              <div>
-                <p className="font-medium">Teams</p>
-                <p className="text-xs text-gray-500">Team configurations</p>
-              </div>
-            </label>
-
-            <label className="flex items-center gap-3 rounded-lg border border-gray-700 p-3 cursor-pointer hover:border-gray-600">
-              <input
-                type="checkbox"
-                checked={syncMemory}
-                onChange={(e) => setSyncMemory(e.target.checked)}
-                className="h-4 w-4 accent-blue-500"
-              />
-              <div>
-                <p className="font-medium">Memory</p>
-                <p className="text-xs text-gray-500">Auto-memory files</p>
-              </div>
-            </label>
-
-            <label className="flex items-center gap-3 rounded-lg border border-gray-700 p-3 cursor-pointer hover:border-gray-600">
-              <input
-                type="checkbox"
-                checked={syncPlugins}
-                onChange={(e) => setSyncPlugins(e.target.checked)}
-                className="h-4 w-4 accent-blue-500"
-              />
-              <div>
-                <p className="font-medium">Plugins</p>
-                <p className="text-xs text-gray-500">Plugin install list &amp; marketplace sources (metadata only)</p>
-              </div>
-            </label>
-          </div>
-
-          {setupError && (
-            <div className="mt-4 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-400">
-              {setupError}
-            </div>
           )}
-
-          <div className="mt-6 flex gap-3">
-            <button
-              onClick={() => setStep("auth")}
-              className="rounded-lg border border-gray-700 px-4 py-2 text-sm hover:bg-gray-800 transition-colors"
-            >
-              Back
-            </button>
-            <button
-              onClick={handleSetup}
-              className="flex-1 rounded-lg bg-green-600 px-4 py-2 font-medium hover:bg-green-500 transition-colors"
-            >
-              Complete Setup
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Step: Progress */}
-      {step === "progress" && (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-8 text-center">
-          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
-          <p className="mt-4 text-gray-400">{setupMessage}</p>
-        </div>
-      )}
-
-      {/* Step: Done */}
-      {step === "done" && (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-8 text-center">
-          <div className="text-4xl">&#10003;</div>
-          <h2 className="mt-3 text-xl font-bold text-green-400">Setup Complete!</h2>
-          <p className="mt-2 text-gray-400">{setupMessage}</p>
-
           <button
-            onClick={onComplete}
-            className="mt-6 w-full rounded-lg bg-blue-600 px-4 py-3 font-medium hover:bg-blue-500 transition-colors"
+            onClick={handleSetup}
+            disabled={!canInitialize || saving}
+            className="rounded-md bg-[var(--color-btn-primary-bg)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--color-btn-primary-hover-bg)] disabled:opacity-50"
           >
-            Go to Dashboard
+            {saving ? "Initializing..." : "Initialize"}
           </button>
         </div>
       )}
@@ -310,29 +257,49 @@ export default function SetupWizard({ onComplete, onCancel }: Props) {
   );
 }
 
-// --- Auth Step Component ---
+/* ================================================================
+   Sub-components
+   ================================================================ */
 
-interface AuthStepProps {
-  authMethod: string;
-  setAuthMethod: (v: string) => void;
-  deviceId: string;
-  setDeviceId: (v: string) => void;
-  defaultDeviceId: string;
-  repoUrl: string;
-  onBack: () => void;
-  onNext: () => void;
+/** 섹션 카드 래퍼 */
+function Section({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="overflow-hidden rounded-md border border-[var(--color-border-default)] bg-[var(--color-canvas-default)]">
+      <div className="border-b border-[var(--color-border-default)] bg-[var(--color-canvas-subtle)] px-4 py-2.5">
+        <span className="text-sm font-semibold text-[var(--color-fg-default)]">{title}</span>
+        <p className="mt-0.5 text-xs text-[var(--color-fg-muted)]">{description}</p>
+      </div>
+      <div className="p-4">{children}</div>
+    </div>
+  );
 }
 
-function AuthStep({
+/** 인증 섹션 */
+function AuthSection({
   authMethod,
   setAuthMethod,
   deviceId,
   setDeviceId,
   defaultDeviceId,
   repoUrl,
-  onBack,
-  onNext,
-}: AuthStepProps) {
+  isInitialized,
+}: {
+  authMethod: string;
+  setAuthMethod: (v: string) => void;
+  deviceId: string;
+  setDeviceId: (v: string) => void;
+  defaultDeviceId: string;
+  repoUrl: string;
+  isInitialized: boolean;
+}) {
   const [authStatus, setAuthStatus] = useState<AuthStatusInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState("");
@@ -344,17 +311,11 @@ function AuthStep({
   const checkAuth = useCallback(async () => {
     setLoading(true);
     try {
-      const status = await invoke<AuthStatusInfo>("check_auth_status");
+      const status = await invokeCommand("check_auth_status");
       setAuthStatus(status);
-
-      // 자동 인증 방식 추천
-      if (status.gh_authenticated) {
-        setAuthMethod("gh_cli");
-      } else if (status.ssh_key_found && !isHttps) {
-        setAuthMethod("ssh_agent");
-      } else if (isHttps) {
-        setAuthMethod("https_token");
-      }
+      if (status.gh_authenticated) setAuthMethod("gh_cli");
+      else if (status.ssh_key_found && !isHttps) setAuthMethod("ssh_agent");
+      else if (isHttps) setAuthMethod("https_token");
     } catch {
       // ignore
     } finally {
@@ -370,7 +331,7 @@ function AuthStep({
     setLoginError(null);
     setLoginMessage(null);
     try {
-      const result = await invoke<string>("login_with_gh_cli");
+      const result = await invokeCommand("login_with_gh_cli");
       setLoginMessage(result);
       checkAuth();
     } catch (e) {
@@ -383,7 +344,7 @@ function AuthStep({
     setLoginError(null);
     setLoginMessage(null);
     try {
-      const result = await invoke<string>("login_with_token", { token: token.trim() });
+      const result = await invokeCommand("login_with_token", { token: token.trim() });
       setLoginMessage(result);
       setAuthMethod("https_token");
       checkAuth();
@@ -392,144 +353,169 @@ function AuthStep({
     }
   }
 
-  if (loading) {
-    return (
-      <div className="rounded-lg border border-gray-800 bg-gray-900 p-8 text-center text-gray-400">
-        Checking authentication...
-      </div>
-    );
-  }
-
   return (
-    <div className="rounded-lg border border-gray-800 bg-gray-900 p-8">
-      <h2 className="text-xl font-bold">Authentication & Device</h2>
-
-      {/* Auth status indicators */}
-      {authStatus && (
-        <div className="mt-4 space-y-2 text-sm">
-          <div className="flex items-center gap-2">
-            <span className={authStatus.gh_authenticated ? "text-green-400" : "text-gray-500"}>
-              {authStatus.gh_authenticated ? "\u2713" : "\u2717"}
-            </span>
-            <span>
-              gh CLI{" "}
-              {authStatus.gh_authenticated && authStatus.gh_username
-                ? `(${authStatus.gh_username})`
-                : authStatus.gh_cli_available
-                  ? "(not logged in)"
-                  : "(not installed)"}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className={authStatus.ssh_key_found ? "text-green-400" : "text-gray-500"}>
-              {authStatus.ssh_key_found ? "\u2713" : "\u2717"}
-            </span>
-            <span>
-              SSH Key{" "}
-              {authStatus.ssh_key_found
-                ? `(${authStatus.ssh_keys.join(", ")})`
-                : "(not found)"}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Auth method selection */}
-      <label className="mt-4 block">
-        <span className="text-sm text-gray-400">Auth Method</span>
-        <select
-          value={authMethod}
-          onChange={(e) => setAuthMethod(e.target.value)}
-          className="mt-1 w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-        >
-          <option value="ssh_agent">SSH Agent</option>
-          <option value="ssh_key">SSH Key</option>
-          <option value="https_token">HTTPS (Personal Access Token)</option>
-          <option value="gh_cli">gh CLI</option>
-        </select>
-      </label>
-
-      {/* gh CLI login */}
-      {authMethod === "gh_cli" && !authStatus?.gh_authenticated && (
-        <div className="mt-3">
-          <p className="text-xs text-gray-500 mb-2">
-            Run <code className="rounded bg-gray-800 px-1">gh auth login</code> in terminal first, then:
-          </p>
-          <button
-            onClick={handleGhLogin}
-            className="rounded-md bg-gray-700 px-3 py-1.5 text-sm hover:bg-gray-600 transition-colors"
-          >
-            Detect gh CLI Login
-          </button>
-        </div>
-      )}
-
-      {/* PAT input */}
-      {authMethod === "https_token" && (
-        <div className="mt-3">
-          <label className="block">
-            <span className="text-sm text-gray-400">Personal Access Token</span>
-            <div className="mt-1 flex gap-2">
-              <input
-                type="password"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="ghp_xxxxxxxxxxxx"
-                className="flex-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+    <Section title="Authentication" description="저장소 인증 방식과 디바이스 이름을 설정합니다.">
+      {loading ? (
+        <p className="text-sm text-[var(--color-fg-muted)]">Checking authentication...</p>
+      ) : (
+        <>
+          {authStatus && (
+            <div className="mb-4 grid gap-3 sm:grid-cols-2">
+              <StatusCard
+                label="GitHub CLI"
+                value={
+                  authStatus.gh_authenticated && authStatus.gh_username
+                    ? authStatus.gh_username
+                    : authStatus.gh_cli_available
+                      ? "Not logged in"
+                      : "Not installed"
+                }
+                ok={authStatus.gh_authenticated}
               />
+              <StatusCard
+                label="SSH keys"
+                value={authStatus.ssh_key_found ? authStatus.ssh_keys.join(", ") : "None found"}
+                ok={authStatus.ssh_key_found}
+              />
+            </div>
+          )}
+
+          <label className="block">
+            <span className="text-sm font-medium text-[var(--color-fg-default)]">Method</span>
+            <select
+              value={authMethod}
+              onChange={(e) => setAuthMethod(e.target.value)}
+              disabled={isInitialized}
+              className="mt-1.5 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-canvas-default)] px-3 py-2 text-sm disabled:opacity-60"
+            >
+              <option value="ssh_agent">SSH Agent</option>
+              <option value="ssh_key">SSH Key</option>
+              <option value="https_token">HTTPS Token</option>
+              <option value="gh_cli">GitHub CLI</option>
+            </select>
+          </label>
+
+          {authMethod === "gh_cli" && !authStatus?.gh_authenticated && (
+            <div className="mt-4 rounded-md border border-[var(--color-border-default)] bg-[var(--color-canvas-subtle)] p-3">
+              <p className="text-sm text-[var(--color-fg-muted)]">
+                Run <code className="rounded bg-[var(--color-canvas-default)] px-1 py-0.5 text-xs">gh auth login</code> first.
+              </p>
               <button
-                onClick={handleTokenLogin}
-                disabled={!token.trim()}
-                className="rounded-md bg-blue-600 px-3 py-2 text-sm hover:bg-blue-500 disabled:opacity-50 transition-colors"
+                onClick={handleGhLogin}
+                className="mt-2 rounded-md border border-[var(--color-btn-border)] bg-[var(--color-btn-bg)] px-3 py-1.5 text-xs font-medium text-[var(--color-fg-default)] hover:bg-[var(--color-btn-hover-bg)]"
               >
-                Save
+                Detect login
               </button>
             </div>
+          )}
+
+          {authMethod === "https_token" && (
+            <div className="mt-4 rounded-md border border-[var(--color-border-default)] bg-[var(--color-canvas-subtle)] p-3">
+              <label className="block">
+                <span className="text-sm font-medium text-[var(--color-fg-default)]">Token</span>
+                <div className="mt-1.5 flex gap-2">
+                  <input
+                    type="password"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    placeholder="ghp_xxxxxxxxxxxx"
+                    className="flex-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-canvas-default)] px-3 py-2 text-sm"
+                  />
+                  <button
+                    onClick={handleTokenLogin}
+                    disabled={!token.trim()}
+                    className="rounded-md bg-[var(--color-btn-primary-bg)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--color-btn-primary-hover-bg)] disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                </div>
+              </label>
+            </div>
+          )}
+
+          {loginMessage && (
+            <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+              {loginMessage}
+            </div>
+          )}
+          {loginError && (
+            <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {loginError}
+            </div>
+          )}
+
+          <label className="mt-4 block">
+            <span className="text-sm font-medium text-[var(--color-fg-default)]">Device name</span>
+            <input
+              type="text"
+              value={deviceId}
+              onChange={(e) => setDeviceId(e.target.value)}
+              placeholder={defaultDeviceId}
+              disabled={isInitialized}
+              className="mt-1.5 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-canvas-default)] px-3 py-2 text-sm disabled:opacity-60"
+            />
           </label>
-          <p className="mt-1 text-xs text-gray-500">
-            Generate at GitHub Settings &gt; Developer settings &gt; Personal access tokens
-          </p>
-        </div>
+        </>
       )}
+    </Section>
+  );
+}
 
-      {/* Status messages */}
-      {loginMessage && (
-        <div className="mt-3 rounded-lg border border-green-800 bg-green-950/30 p-2 text-sm text-green-400">
-          {loginMessage}
-        </div>
-      )}
-      {loginError && (
-        <div className="mt-3 rounded-lg border border-red-800 bg-red-950/30 p-2 text-sm text-red-400">
-          {loginError}
-        </div>
-      )}
-
-      {/* Device name */}
-      <label className="mt-4 block">
-        <span className="text-sm text-gray-400">Device Name</span>
-        <input
-          type="text"
-          value={deviceId}
-          onChange={(e) => setDeviceId(e.target.value)}
-          placeholder={defaultDeviceId}
-          className="mt-1 w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-        />
-      </label>
-
-      <div className="mt-6 flex gap-3">
-        <button
-          onClick={onBack}
-          className="rounded-lg border border-gray-700 px-4 py-2 text-sm hover:bg-gray-800 transition-colors"
-        >
-          Back
-        </button>
-        <button
-          onClick={onNext}
-          className="flex-1 rounded-lg bg-blue-600 px-4 py-2 font-medium hover:bg-blue-500 transition-colors"
-        >
-          Next
-        </button>
-      </div>
+/** 상태 카드 */
+function StatusCard({
+  label,
+  value,
+  ok,
+  error,
+}: {
+  label: string;
+  value: string;
+  ok: boolean;
+  error?: string | null;
+}) {
+  return (
+    <div
+      className={`rounded-md border p-3 ${
+        error
+          ? "border-red-200 bg-red-50"
+          : ok
+            ? "border-emerald-200 bg-emerald-50"
+            : "border-[var(--color-border-default)] bg-[var(--color-canvas-subtle)]"
+      }`}
+    >
+      <div className="text-xs font-medium text-[var(--color-fg-muted)]">{label}</div>
+      <div className="mt-1 text-sm font-medium text-[var(--color-fg-default)]">{value}</div>
+      {error && <div className="mt-1 text-xs text-red-700">{error}</div>}
     </div>
+  );
+}
+
+/** Switch 토글 행 */
+function ToggleRow({
+  label,
+  detail,
+  checked,
+  onChange,
+}: {
+  label: string;
+  detail: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center justify-between px-4 py-3">
+      <div>
+        <div className="text-sm font-medium text-[var(--color-fg-default)]">{label}</div>
+        <div className="text-xs text-[var(--color-fg-muted)]">{detail}</div>
+      </div>
+      <div className="toggle-switch">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span className="slider" />
+      </div>
+    </label>
   );
 }

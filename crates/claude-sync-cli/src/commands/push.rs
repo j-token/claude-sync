@@ -149,15 +149,15 @@ pub async fn run(dry_run: bool) -> Result<()> {
         repo.commit(&message)?;
         println!("  {} 커밋 완료: {}", style("✓").green(), message);
 
-        match repo.push("origin", &config.repo.branch) {
-            Ok(_) => println!("  {} 푸시 완료", style("✓").green()),
+        match repo.push_with_recovery("origin", &config.repo.branch, &config) {
+            Ok(result) => {
+                if result.recovery_applied {
+                    println!("  {} {}", style("⟳").yellow(), result.message);
+                }
+                println!("  {} 푸시 완료", style("✓").green());
+            }
             Err(e) => {
-                println!(
-                    "  {} 푸시 실패: {}",
-                    style("✗").red(),
-                    e
-                );
-                println!("    먼저 'claude-sync pull'을 실행해보세요.");
+                println!("  {} 푸시 실패: {}", style("✗").red(), e);
             }
         }
     }
@@ -168,6 +168,9 @@ pub async fn run(dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// GitHub 파일 크기 제한(100MB)보다 낮은 안전 한계
+const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
+
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -176,13 +179,19 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
         let dst_path = dst.join(entry.file_name());
 
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == "node_modules" || name == ".git" || name == "target" {
+        if matches!(
+            name.as_str(),
+            "node_modules" | ".git" | "target" | "bin" | "obj" | "dist" | "build"
+        ) {
             continue;
         }
 
         if src_path.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
+            if std::fs::metadata(&src_path)?.len() > MAX_FILE_SIZE {
+                continue;
+            }
             std::fs::copy(&src_path, &dst_path)?;
         }
     }
