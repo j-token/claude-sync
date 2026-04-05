@@ -1,7 +1,14 @@
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use crate::error::{Result, SyncError};
+
+/// Windows에서 콘솔 창을 숨기는 플래그
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Git 명령 실행 결과
 #[derive(Debug)]
@@ -9,6 +16,33 @@ pub struct GitOutput {
     pub success: bool,
     pub stdout: String,
     pub stderr: String,
+}
+
+/// 인증 상태 정보
+#[derive(Debug, Clone)]
+pub struct AuthStatus {
+    pub git_available: bool,
+    pub git_version: Option<String>,
+    pub gh_cli_available: bool,
+    pub gh_authenticated: bool,
+    pub gh_username: Option<String>,
+    pub ssh_key_found: bool,
+}
+
+/// 콘솔 창을 숨기고 Command 생성하는 헬퍼
+fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// 임의의 실행파일에 대해 콘솔 숨김 Command 생성
+fn silent_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
 }
 
 /// 시스템 git 명령어를 사용하는 Git 래퍼
@@ -25,7 +59,6 @@ impl GitRepo {
             work_dir: path.to_path_buf(),
         };
 
-        // .git이 없으면 init
         if !path.join(".git").exists() {
             repo.run_git(&["init"])?;
         }
@@ -37,7 +70,7 @@ impl GitRepo {
     pub fn clone_repo(url: &str, path: &Path) -> Result<Self> {
         std::fs::create_dir_all(path)?;
 
-        let output = Command::new("git")
+        let output = git_command()
             .args(["clone", url, &path.to_string_lossy()])
             .output()
             .map_err(|e| SyncError::Git(format!("Failed to run git clone: {e}")))?;
@@ -54,7 +87,6 @@ impl GitRepo {
 
     /// remote 설정
     pub fn set_remote(&self, name: &str, url: &str) -> Result<()> {
-        // 기존 remote 제거 시도 (에러 무시)
         let _ = self.run_git(&["remote", "remove", name]);
         self.run_git(&["remote", "add", name, url])?;
         Ok(())
@@ -62,12 +94,9 @@ impl GitRepo {
 
     /// 브랜치 설정
     pub fn set_branch(&self, branch: &str) -> Result<()> {
-        // 현재 브랜치가 없으면 orphan 브랜치 생성
         let result = self.run_git(&["branch", "--show-current"]);
         match result {
-            Ok(output) if output.stdout.trim().is_empty() => {
-                // 커밋이 없는 상태 — 첫 커밋 후에 브랜치 설정
-            }
+            Ok(output) if output.stdout.trim().is_empty() => {}
             _ => {
                 let _ = self.run_git(&["branch", "-M", branch]);
             }
@@ -92,7 +121,9 @@ impl GitRepo {
     /// 커밋
     pub fn commit(&self, message: &str) -> Result<()> {
         let output = self.run_git(&["commit", "-m", message])?;
-        if output.stdout.contains("nothing to commit") || output.stderr.contains("nothing to commit") {
+        if output.stdout.contains("nothing to commit")
+            || output.stderr.contains("nothing to commit")
+        {
             tracing::info!("Nothing to commit");
         }
         Ok(())
@@ -123,7 +154,8 @@ impl GitRepo {
 
     /// 로컬과 원격 간의 diff 파일 목록
     pub fn diff_names(&self, remote: &str, branch: &str) -> Result<Vec<String>> {
-        let output = self.run_git(&["diff", "--name-only", &format!("{remote}/{branch}"), "HEAD"]);
+        let output =
+            self.run_git(&["diff", "--name-only", &format!("{remote}/{branch}"), "HEAD"]);
         match output {
             Ok(out) => Ok(out
                 .stdout
@@ -164,9 +196,33 @@ impl GitRepo {
         }
     }
 
-    /// git 명령 실행
+    /// HTTPS credential 설정 (PAT 기반)
+    pub fn set_https_credential(&self, token: &str) -> Result<()> {
+        // extraheader로 토큰 설정
+        self.run_git(&[
+            "config",
+            "http.extraHeader",
+            &format!("Authorization: token {token}"),
+        ])?;
+        Ok(())
+    }
+
+    /// HTTPS URL로 remote 변경 (PAT 임베드)
+    pub fn set_remote_with_token(&self, name: &str, url: &str, token: &str) -> Result<()> {
+        // https://github.com/user/repo.git → https://TOKEN@github.com/user/repo.git
+        let authed_url = if url.starts_with("https://") {
+            url.replacen("https://", &format!("https://{}@", token), 1)
+        } else {
+            url.to_string()
+        };
+        let _ = self.run_git(&["remote", "remove", name]);
+        self.run_git(&["remote", "add", name, &authed_url])?;
+        Ok(())
+    }
+
+    /// git 명령 실행 (콘솔 창 숨김)
     fn run_git(&self, args: &[&str]) -> Result<GitOutput> {
-        let output = Command::new("git")
+        let output = git_command()
             .current_dir(&self.work_dir)
             .args(args)
             .output()
@@ -181,7 +237,6 @@ impl GitRepo {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         if !output.status.success() {
-            // 일부 명령은 비정상 종료해도 괜찮은 경우가 있음
             let cmd = args.join(" ");
             tracing::warn!("git {cmd} failed: {stderr}");
             return Err(SyncError::Git(format!("git {cmd}: {stderr}")));
@@ -197,7 +252,7 @@ impl GitRepo {
 
 /// git이 설치되어 있는지 확인
 pub fn check_git_available() -> Result<String> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(["--version"])
         .output()
         .map_err(|_| SyncError::Git("git is not installed or not in PATH".to_string()))?;
@@ -211,7 +266,7 @@ pub fn check_git_available() -> Result<String> {
 
 /// gh CLI를 통한 인증 토큰 확인
 pub fn get_gh_token() -> Result<String> {
-    let output = Command::new("gh")
+    let output = silent_command("gh")
         .args(["auth", "token"])
         .output()
         .map_err(|_| SyncError::Auth("gh CLI is not installed".to_string()))?;
@@ -219,6 +274,68 @@ pub fn get_gh_token() -> Result<String> {
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
-        Err(SyncError::Auth("gh auth token failed. Run 'gh auth login' first.".to_string()))
+        Err(SyncError::Auth(
+            "gh auth token failed. Run 'gh auth login' first.".to_string(),
+        ))
+    }
+}
+
+/// gh CLI 로그인된 유저 정보
+pub fn get_gh_user() -> Result<String> {
+    let output = silent_command("gh")
+        .args(["api", "user", "--jq", ".login"])
+        .output()
+        .map_err(|_| SyncError::Auth("gh CLI is not installed".to_string()))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(SyncError::Auth("Not logged in to gh CLI".to_string()))
+    }
+}
+
+/// SSH 키 존재 여부 확인
+pub fn find_ssh_keys() -> Vec<String> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let ssh_dir = home.join(".ssh");
+    let candidates = ["id_ed25519", "id_rsa", "id_ecdsa"];
+
+    candidates
+        .iter()
+        .filter(|name| ssh_dir.join(name).exists())
+        .map(|name| name.to_string())
+        .collect()
+}
+
+/// 종합 인증 상태 확인
+pub fn check_auth_status() -> AuthStatus {
+    let git_check = check_git_available();
+    let git_available = git_check.is_ok();
+    let git_version = git_check.ok();
+
+    let gh_token = get_gh_token();
+    let gh_cli_available = gh_token.is_ok() || {
+        silent_command("gh")
+            .args(["--version"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    let gh_authenticated = gh_token.is_ok();
+    let gh_username = if gh_authenticated {
+        get_gh_user().ok()
+    } else {
+        None
+    };
+
+    let ssh_keys = find_ssh_keys();
+
+    AuthStatus {
+        git_available,
+        git_version,
+        gh_cli_available,
+        gh_authenticated,
+        gh_username,
+        ssh_key_found: !ssh_keys.is_empty(),
     }
 }

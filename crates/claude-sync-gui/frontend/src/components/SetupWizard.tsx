@@ -1,5 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { AuthStatusInfo } from "../lib/types";
 
 interface Props {
   onComplete: () => void;
@@ -183,49 +184,16 @@ export default function SetupWizard({ onComplete, onCancel }: Props) {
 
       {/* Step: Auth & Device */}
       {step === "auth" && (
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-8">
-          <h2 className="text-xl font-bold">Authentication & Device</h2>
-
-          <label className="mt-4 block">
-            <span className="text-sm text-gray-400">Auth Method</span>
-            <select
-              value={authMethod}
-              onChange={(e) => setAuthMethod(e.target.value)}
-              className="mt-1 w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-            >
-              <option value="ssh_agent">SSH Agent (recommended)</option>
-              <option value="ssh_key">SSH Key</option>
-              <option value="https_token">HTTPS Token</option>
-              <option value="gh_cli">gh CLI</option>
-            </select>
-          </label>
-
-          <label className="mt-4 block">
-            <span className="text-sm text-gray-400">Device Name</span>
-            <input
-              type="text"
-              value={deviceId}
-              onChange={(e) => setDeviceId(e.target.value)}
-              placeholder={defaultDeviceId}
-              className="mt-1 w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-            />
-          </label>
-
-          <div className="mt-6 flex gap-3">
-            <button
-              onClick={() => setStep("repo")}
-              className="rounded-lg border border-gray-700 px-4 py-2 text-sm hover:bg-gray-800 transition-colors"
-            >
-              Back
-            </button>
-            <button
-              onClick={() => setStep("options")}
-              className="flex-1 rounded-lg bg-blue-600 px-4 py-2 font-medium hover:bg-blue-500 transition-colors"
-            >
-              Next
-            </button>
-          </div>
-        </div>
+        <AuthStep
+          authMethod={authMethod}
+          setAuthMethod={setAuthMethod}
+          deviceId={deviceId}
+          setDeviceId={setDeviceId}
+          defaultDeviceId={defaultDeviceId}
+          repoUrl={repoUrl}
+          onBack={() => setStep("repo")}
+          onNext={() => setStep("options")}
+        />
       )}
 
       {/* Step: Sync Options */}
@@ -323,6 +291,230 @@ export default function SetupWizard({ onComplete, onCancel }: Props) {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// --- Auth Step Component ---
+
+interface AuthStepProps {
+  authMethod: string;
+  setAuthMethod: (v: string) => void;
+  deviceId: string;
+  setDeviceId: (v: string) => void;
+  defaultDeviceId: string;
+  repoUrl: string;
+  onBack: () => void;
+  onNext: () => void;
+}
+
+function AuthStep({
+  authMethod,
+  setAuthMethod,
+  deviceId,
+  setDeviceId,
+  defaultDeviceId,
+  repoUrl,
+  onBack,
+  onNext,
+}: AuthStepProps) {
+  const [authStatus, setAuthStatus] = useState<AuthStatusInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [token, setToken] = useState("");
+  const [loginMessage, setLoginMessage] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+
+  const isHttps = repoUrl.startsWith("https://");
+
+  const checkAuth = useCallback(async () => {
+    setLoading(true);
+    try {
+      const status = await invoke<AuthStatusInfo>("check_auth_status");
+      setAuthStatus(status);
+
+      // 자동 인증 방식 추천
+      if (status.gh_authenticated) {
+        setAuthMethod("gh_cli");
+      } else if (status.ssh_key_found && !isHttps) {
+        setAuthMethod("ssh_agent");
+      } else if (isHttps) {
+        setAuthMethod("https_token");
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false);
+    }
+  }, [isHttps, setAuthMethod]);
+
+  useEffect(() => {
+    checkAuth();
+  }, [checkAuth]);
+
+  async function handleGhLogin() {
+    setLoginError(null);
+    setLoginMessage(null);
+    try {
+      const result = await invoke<string>("login_with_gh_cli");
+      setLoginMessage(result);
+      checkAuth();
+    } catch (e) {
+      setLoginError(`${e}`);
+    }
+  }
+
+  async function handleTokenLogin() {
+    if (!token.trim()) return;
+    setLoginError(null);
+    setLoginMessage(null);
+    try {
+      const result = await invoke<string>("login_with_token", { token: token.trim() });
+      setLoginMessage(result);
+      setAuthMethod("https_token");
+      checkAuth();
+    } catch (e) {
+      setLoginError(`${e}`);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="rounded-lg border border-gray-800 bg-gray-900 p-8 text-center text-gray-400">
+        Checking authentication...
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-900 p-8">
+      <h2 className="text-xl font-bold">Authentication & Device</h2>
+
+      {/* Auth status indicators */}
+      {authStatus && (
+        <div className="mt-4 space-y-2 text-sm">
+          <div className="flex items-center gap-2">
+            <span className={authStatus.gh_authenticated ? "text-green-400" : "text-gray-500"}>
+              {authStatus.gh_authenticated ? "\u2713" : "\u2717"}
+            </span>
+            <span>
+              gh CLI{" "}
+              {authStatus.gh_authenticated && authStatus.gh_username
+                ? `(${authStatus.gh_username})`
+                : authStatus.gh_cli_available
+                  ? "(not logged in)"
+                  : "(not installed)"}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={authStatus.ssh_key_found ? "text-green-400" : "text-gray-500"}>
+              {authStatus.ssh_key_found ? "\u2713" : "\u2717"}
+            </span>
+            <span>
+              SSH Key{" "}
+              {authStatus.ssh_key_found
+                ? `(${authStatus.ssh_keys.join(", ")})`
+                : "(not found)"}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Auth method selection */}
+      <label className="mt-4 block">
+        <span className="text-sm text-gray-400">Auth Method</span>
+        <select
+          value={authMethod}
+          onChange={(e) => setAuthMethod(e.target.value)}
+          className="mt-1 w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+        >
+          <option value="ssh_agent">SSH Agent</option>
+          <option value="ssh_key">SSH Key</option>
+          <option value="https_token">HTTPS (Personal Access Token)</option>
+          <option value="gh_cli">gh CLI</option>
+        </select>
+      </label>
+
+      {/* gh CLI login */}
+      {authMethod === "gh_cli" && !authStatus?.gh_authenticated && (
+        <div className="mt-3">
+          <p className="text-xs text-gray-500 mb-2">
+            Run <code className="rounded bg-gray-800 px-1">gh auth login</code> in terminal first, then:
+          </p>
+          <button
+            onClick={handleGhLogin}
+            className="rounded-md bg-gray-700 px-3 py-1.5 text-sm hover:bg-gray-600 transition-colors"
+          >
+            Detect gh CLI Login
+          </button>
+        </div>
+      )}
+
+      {/* PAT input */}
+      {authMethod === "https_token" && (
+        <div className="mt-3">
+          <label className="block">
+            <span className="text-sm text-gray-400">Personal Access Token</span>
+            <div className="mt-1 flex gap-2">
+              <input
+                type="password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="ghp_xxxxxxxxxxxx"
+                className="flex-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              />
+              <button
+                onClick={handleTokenLogin}
+                disabled={!token.trim()}
+                className="rounded-md bg-blue-600 px-3 py-2 text-sm hover:bg-blue-500 disabled:opacity-50 transition-colors"
+              >
+                Save
+              </button>
+            </div>
+          </label>
+          <p className="mt-1 text-xs text-gray-500">
+            Generate at GitHub Settings &gt; Developer settings &gt; Personal access tokens
+          </p>
+        </div>
+      )}
+
+      {/* Status messages */}
+      {loginMessage && (
+        <div className="mt-3 rounded-lg border border-green-800 bg-green-950/30 p-2 text-sm text-green-400">
+          {loginMessage}
+        </div>
+      )}
+      {loginError && (
+        <div className="mt-3 rounded-lg border border-red-800 bg-red-950/30 p-2 text-sm text-red-400">
+          {loginError}
+        </div>
+      )}
+
+      {/* Device name */}
+      <label className="mt-4 block">
+        <span className="text-sm text-gray-400">Device Name</span>
+        <input
+          type="text"
+          value={deviceId}
+          onChange={(e) => setDeviceId(e.target.value)}
+          placeholder={defaultDeviceId}
+          className="mt-1 w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+        />
+      </label>
+
+      <div className="mt-6 flex gap-3">
+        <button
+          onClick={onBack}
+          className="rounded-lg border border-gray-700 px-4 py-2 text-sm hover:bg-gray-800 transition-colors"
+        >
+          Back
+        </button>
+        <button
+          onClick={onNext}
+          className="flex-1 rounded-lg bg-blue-600 px-4 py-2 font-medium hover:bg-blue-500 transition-colors"
+        >
+          Next
+        </button>
+      </div>
     </div>
   );
 }

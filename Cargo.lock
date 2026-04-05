@@ -594,6 +594,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "claude-sync-core",
+ "hostname",
  "serde",
  "serde_json",
  "tauri",

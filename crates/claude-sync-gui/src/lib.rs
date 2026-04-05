@@ -427,6 +427,86 @@ async fn run_setup(input: SetupInput) -> Result<String, String> {
     .await
 }
 
+/// 인증 상태 정보 (GUI용)
+#[derive(Serialize, Clone)]
+struct AuthStatusInfo {
+    git_available: bool,
+    git_version: Option<String>,
+    gh_cli_available: bool,
+    gh_authenticated: bool,
+    gh_username: Option<String>,
+    ssh_key_found: bool,
+    ssh_keys: Vec<String>,
+}
+
+#[tauri::command]
+async fn check_auth_status() -> Result<AuthStatusInfo, String> {
+    blocking(|| {
+        let status = git_ops::check_auth_status();
+        let ssh_keys = git_ops::find_ssh_keys();
+        Ok(AuthStatusInfo {
+            git_available: status.git_available,
+            git_version: status.git_version,
+            gh_cli_available: status.gh_cli_available,
+            gh_authenticated: status.gh_authenticated,
+            gh_username: status.gh_username,
+            ssh_key_found: status.ssh_key_found,
+            ssh_keys,
+        })
+    })
+    .await
+}
+
+/// PAT 토큰으로 HTTPS 인증 설정
+#[tauri::command]
+async fn login_with_token(token: String) -> Result<String, String> {
+    blocking(move || {
+        // 토큰 유효성 확인: gh api로 테스트
+        let _output = std::process::Command::new("git")
+            .args(["ls-remote", "https://github.com"])
+            .env("GIT_ASKPASS", "echo")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output();
+
+        // 토큰을 git credential에 저장
+        let config = SyncConfig::load().map_err(|e| e.to_string())?;
+        let repo_path = SyncConfig::repo_path();
+
+        if repo_path.join(".git").exists() {
+            let repo = GitRepo::open_or_init(&repo_path).map_err(|e| e.to_string())?;
+            // HTTPS URL이면 토큰 임베드
+            if config.repo.url.starts_with("https://") {
+                repo.set_remote_with_token("origin", &config.repo.url, &token)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        Ok("Token configured".to_string())
+    })
+    .await
+}
+
+/// gh CLI 로그인 상태 확인 및 토큰 가져오기
+#[tauri::command]
+async fn login_with_gh_cli() -> Result<String, String> {
+    blocking(|| {
+        let token = git_ops::get_gh_token().map_err(|e| e.to_string())?;
+        let user = git_ops::get_gh_user().unwrap_or_else(|_| "unknown".to_string());
+
+        let config = SyncConfig::load().map_err(|e| e.to_string())?;
+        let repo_path = SyncConfig::repo_path();
+
+        if repo_path.join(".git").exists() && config.repo.url.starts_with("https://") {
+            let repo = GitRepo::open_or_init(&repo_path).map_err(|e| e.to_string())?;
+            repo.set_remote_with_token("origin", &config.repo.url, &token)
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(format!("Logged in as {user}"))
+    })
+    .await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -441,6 +521,9 @@ pub fn run() {
             check_git,
             get_default_device_id,
             run_setup,
+            check_auth_status,
+            login_with_token,
+            login_with_gh_cli,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

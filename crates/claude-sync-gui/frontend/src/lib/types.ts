@@ -20,6 +20,16 @@ export interface DetectedSecret {
   preview: string;
 }
 
+export interface AuthStatusInfo {
+  git_available: boolean;
+  git_version: string | null;
+  gh_cli_available: boolean;
+  gh_authenticated: boolean;
+  gh_username: string | null;
+  ssh_key_found: boolean;
+  ssh_keys: string[];
+}
+
 export interface SkillEntry {
   name: string;
   path: string;
