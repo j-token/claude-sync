@@ -3,10 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import Dashboard from "./components/Dashboard";
 import SkillManager from "./components/SkillManager";
 import SecretManager from "./components/SecretManager";
+import PluginManager from "./components/PluginManager";
 import SetupWizard from "./components/SetupWizard";
 import type { SyncStatus } from "./lib/types";
 
-type Tab = "dashboard" | "skills" | "secrets";
+type Tab = "dashboard" | "skills" | "plugins" | "secrets";
 
 function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -41,6 +42,7 @@ function App() {
   const tabs: { id: Tab; label: string }[] = [
     { id: "dashboard", label: "Dashboard" },
     { id: "skills", label: "Skills" },
+    { id: "plugins", label: "Plugins" },
     { id: "secrets", label: "Secrets" },
   ];
 
@@ -121,6 +123,7 @@ function App() {
           <Dashboard status={status} onRefresh={refreshStatus} />
         )}
         {tab === "skills" && <SkillManager />}
+        {tab === "plugins" && <PluginManager />}
         {tab === "secrets" && <SecretManager />}
       </main>
     </div>

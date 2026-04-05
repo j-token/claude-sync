@@ -235,6 +235,71 @@ async fn list_skills() -> Result<Vec<SkillEntry>, String> {
     .await
 }
 
+/// 플러그인 정보 (GUI용)
+#[derive(Serialize, Clone)]
+struct PluginEntry {
+    id: String,
+    name: String,
+    marketplace: String,
+    version: String,
+    source_type: String,
+    source_repo: Option<String>,
+    enabled: bool,
+}
+
+#[tauri::command]
+async fn list_plugins() -> Result<Vec<PluginEntry>, String> {
+    blocking(|| {
+        let config = SyncConfig::load().map_err(|e| e.to_string())?;
+        let result = discovery::discover(&config).map_err(|e| e.to_string())?;
+
+        // settings.json에서 enabledPlugins 읽기
+        let claude_dir = SyncConfig::claude_dir();
+        let settings_path = claude_dir.join("settings.json");
+        let enabled_plugins: std::collections::HashMap<String, bool> =
+            if settings_path.exists() {
+                let content =
+                    std::fs::read_to_string(&settings_path).unwrap_or_default();
+                let json: serde_json::Value =
+                    serde_json::from_str(&content).unwrap_or_default();
+                json.get("enabledPlugins")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| {
+                        obj.iter()
+                            .map(|(k, v)| (k.clone(), v.as_bool().unwrap_or(false)))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                std::collections::HashMap::new()
+            };
+
+        let entries: Vec<PluginEntry> = result
+            .plugins
+            .iter()
+            .map(|p| {
+                let enabled = enabled_plugins.get(&p.id).copied().unwrap_or(false);
+                PluginEntry {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    marketplace: p.marketplace.clone(),
+                    version: p.version.clone(),
+                    source_type: p
+                        .source
+                        .as_ref()
+                        .map(|s| s.source_type.clone())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    source_repo: p.source.as_ref().and_then(|s| s.repo.clone()),
+                    enabled,
+                }
+            })
+            .collect();
+
+        Ok(entries)
+    })
+    .await
+}
+
 #[tauri::command]
 async fn sync_push() -> Result<String, String> {
     blocking(|| {
@@ -524,6 +589,7 @@ pub fn run() {
             get_config,
             list_secrets,
             list_skills,
+            list_plugins,
             sync_push,
             sync_pull,
             check_git,

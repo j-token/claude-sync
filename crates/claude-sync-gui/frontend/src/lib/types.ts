@@ -32,6 +32,16 @@ export interface AuthStatusInfo {
   ssh_keys: string[];
 }
 
+export interface PluginEntry {
+  id: string;
+  name: string;
+  marketplace: string;
+  version: string;
+  source_type: string;
+  source_repo: string | null;
+  enabled: boolean;
+}
+
 export interface SkillEntry {
   name: string;
   path: string;
