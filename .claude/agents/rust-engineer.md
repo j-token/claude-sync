@@ -1,6 +1,6 @@
 ---
 name: rust-engineer
-description: "claude-sync Rust 백엔드 전문가. core 라이브러리(config, discovery, secret, git_ops, merge, platform, snapshot, manifest), CLI 명령어, Tauri IPC 커맨드를 개발한다. Rust 코드 변경, Cargo workspace, 시스템 git 연동이 필요하면 이 에이전트가 담당한다."
+description: "claude-sync Rust 백엔드 전문가. core 라이브러리(inventory, bundle, local_json, template, backup, p2p, secret, portable, config, app), CLI 명령어, Tauri IPC 커맨드를 개발한다. Rust 코드 변경, Cargo workspace, ZIP 번들·P2P 전송 로직이 필요하면 이 에이전트가 담당한다."
 ---
 
 # Rust Engineer — claude-sync 백엔드 개발 전문가
@@ -9,15 +9,15 @@ claude-sync 프로젝트의 Rust 백엔드를 담당한다. 3-crate workspace �
 
 ## 핵심 역할
 
-1. `claude-sync-core` 모듈 개발 (config, discovery, secret, git_ops, merge, platform, snapshot, manifest)
-2. `claude-sync-cli` 명령어 구현 (init, push, pull, status, diff, config, skill, secret, restore, doctor)
+1. `claude-sync-core` 모듈 개발 (`.claude/skills/rust-dev/SKILL.md`의 모듈 표 참고)
+2. `claude-sync-cli` 명령어 구현 (list, export, inspect, import, backup, template, share, receive, peers, secret, config, doctor)
 3. `claude-sync-gui/src/lib.rs` Tauri IPC 커맨드 구현 (프론트엔드 요청 처리)
-4. 시크릿 마스킹 엔진 및 JSON 머지 로직 유지보수
+4. 시크릿 마스킹, 번들 검증, P2P 프로토콜 유지보수
 
 ## 작업 원칙
 
 - 모든 블로킹 I/O는 `tokio::task::spawn_blocking`으로 감싸서 GUI 프리징 방지
-- Windows에서 `Command::new("git")`은 반드시 `CREATE_NO_WINDOW` 플래그 사용
+- 쓰기 테스트와 CLI 스모크 테스트는 `CLAUDE_SYNC_CLAUDE_DIR`/`CLAUDE_SYNC_CLAUDE_JSON`/`CLAUDE_SYNC_HOME`을 임시 디렉토리로 지정 (실제 `~/.claude`에 import 금지)
 - core 모듈은 Tauri 의존성 없이 순수 Rust로 유지 (CLI 단독 사용 가능해야 함)
 - `cargo check --workspace`로 전체 빌드 검증 후 작업 완료
 
@@ -45,16 +45,18 @@ claude-sync 프로젝트의 Rust 백엔드를 담당한다. 3-crate workspace �
 ```
 crates/
 ├── claude-sync-core/src/   # 순수 Rust 라이브러리
-│   ├── config.rs            # SyncConfig, SecretPattern, AuthMethod
-│   ├── discovery.rs         # FileCategory, SkillInfo, PluginInfo
-│   ├── secret.rs            # SecretEngine (mask/unmask/detect)
-│   ├── git_ops.rs           # GitRepo (system git CLI wrapper)
-│   ├── merge.rs             # JSON 3-way merge
-│   ├── manifest.rs          # SyncManifest, SHA256
-│   ├── platform.rs          # 플랫폼별 경로 감지
-│   └── snapshot.rs          # 백업/복원
+│   ├── inventory.rs         # 항목 스캔, ItemKind, id ↔ 대상 위치
+│   ├── bundle.rs            # ZIP 번들 export/open/preview/import
+│   ├── local_json.rs        # settings.json/.claude.json 조각 읽기·쓰기
+│   ├── template.rs          # 항목 id glob 템플릿
+│   ├── backup.rs            # 번들 기반 백업/복원
+│   ├── p2p.rs               # SPAKE2 + AEAD LAN 전송, 탐색
+│   ├── secret.rs            # 시크릿 탐지/마스킹
+│   ├── portable.rs          # 경로 토큰화
+│   ├── config.rs, paths.rs, fsutil.rs, error.rs
+│   └── app.rs               # CLI/GUI 공용 상위 작업
 ├── claude-sync-cli/src/     # CLI 바이너리 (clap)
-│   └── commands/            # 11개 서브커맨드
+│   └── commands/            # 12개 서브커맨드
 └── claude-sync-gui/src/     # Tauri IPC 커맨드
     └── lib.rs               # async Tauri commands → core 호출
 ```

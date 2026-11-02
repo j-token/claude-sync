@@ -9,17 +9,16 @@ claude-sync 데스크톱 앱의 React + TypeScript + Tailwind 프론트엔드를
 
 ## 핵심 역할
 
-1. React 컴포넌트 개발 (Dashboard, SkillManager, PluginManager, SecretManager, SetupWizard)
-2. Tauri IPC `invoke()` 호출로 백엔드 데이터 연동
-3. TypeScript 타입 정의 (`lib/types.ts`)를 Rust Tauri 커맨드와 동기화
-4. Tailwind CSS로 다크 테마 UI 스타일링
+1. React 탭 컴포넌트 개발 (`.claude/skills/frontend-dev/SKILL.md`의 구조 참고)
+2. `invokeCommand()`로 백엔드 데이터 연동
+3. `lib/types.ts`, `lib/commands.ts`를 Rust Tauri 커맨드와 동기화하고 `lib/mock.ts` 갱신
+4. `styles/globals.css`의 CSS 변수 체계로 UI 스타일링
 
 ## 작업 원칙
 
-- `invoke<T>("command_name")` 호출은 반드시 try-catch로 에러 핸들링
+- `invokeCommand` 호출은 반드시 try-catch로 에러 핸들링
 - 타입은 `lib/types.ts`에 중앙 관리, 컴포넌트에서 직접 정의하지 않음
-- Tailwind 클래스는 기존 컴포넌트의 색상 체계(gray-950 배경, gray-100 텍스트, gray-800 테두리) 유지
-- 상태가 없는 경우(미초기화)를 항상 처리 — SetupWizard로 안내
+- 설정 파일이 없어도 앱은 기본값으로 동작한다 (셋업 위저드 없음)
 
 ## 입력/출력 프로토콜
 
@@ -50,27 +49,17 @@ crates/claude-sync-gui/frontend/
 ├── tsconfig.json
 └── src/
     ├── main.tsx                # React 엔트리포인트
-    ├── App.tsx                 # 탭 네비게이션 (Dashboard|Skills|Plugins|Secrets)
-    ├── vite-env.d.ts
-    ├── styles/globals.css      # Tailwind import
-    ├── lib/types.ts            # TypeScript 인터페이스 (SyncStatus, SkillEntry, PluginEntry 등)
-    └── components/
-        ├── Dashboard.tsx       # 상태 표시 + Push/Pull 버튼
-        ├── SkillManager.tsx    # 스킬 선택 + 싱크
-        ├── PluginManager.tsx   # 플러그인 메타데이터
-        ├── SecretManager.tsx   # 시크릿 목록
-        └── SetupWizard.tsx     # 초기 설정 위저드 (Welcome→Repo→Auth→Options→Done)
+    ├── App.tsx                 # 탭 (개요|항목|가져오기|P2P|백업|템플릿|시크릿|설정)
+    ├── styles/globals.css      # Tailwind + CSS 변수
+    ├── lib/                    # types.ts, commands.ts, backend.ts, mock.ts, dialog.ts ...
+    └── components/             # *Tab.tsx, BundlePreviewPanel.tsx, ui.tsx
 ```
 
 ## Tauri IPC 패턴
 
 ```typescript
-// 데이터 조회
-const status = await invoke<SyncStatus>("get_status");
-
-// 액션 실행
-const result = await invoke<string>("sync_push");
-
-// 파라미터 전달
-await invoke<string>("run_setup", { input: { repo_url, auth_method, ... } });
+// 모든 커맨드는 lib/backend.ts의 invokeCommand로 호출한다.
+// Tauri에서는 invoke(cmd, { input })로 전달되고, 브라우저에서는 mock.ts가 응답한다.
+const overview = await invokeCommand("get_overview", {});
+const result = await invokeCommand("export_bundle", { ids, path, label: null, template: null });
 ```

@@ -52,15 +52,18 @@ cd crates/claude-sync-gui/frontend && pnpm build
 CLAUDE_SYNC="target/debug/claude-sync.exe"  # 또는 release
 
 # 기본 동작
+# 쓰기 명령은 반드시 임시 디렉토리로 격리: CLAUDE_SYNC_CLAUDE_DIR, CLAUDE_SYNC_CLAUDE_JSON, CLAUDE_SYNC_HOME
 $CLAUDE_SYNC --help
 $CLAUDE_SYNC doctor
-$CLAUDE_SYNC status
-$CLAUDE_SYNC push --dry-run
-$CLAUDE_SYNC pull --dry-run
-$CLAUDE_SYNC skill list
+$CLAUDE_SYNC list
+$CLAUDE_SYNC export -t essentials -o <tmp>/b.zip
+$CLAUDE_SYNC inspect <tmp>/b.zip
+$CLAUDE_SYNC import <tmp>/b.zip --all --yes      # 격리된 환경에서만
+$CLAUDE_SYNC backup list
+$CLAUDE_SYNC template list
 $CLAUDE_SYNC secret list
-$CLAUDE_SYNC config show
-$CLAUDE_SYNC restore --list
+$CLAUDE_SYNC share claude_md --port 47999        # 백그라운드로 실행 후
+$CLAUDE_SYNC receive 127.0.0.1:47999 --code <코드>
 ```
 
 각 명령어의 종료 코드 확인. 비정상 종료(panic, exit code != 0) 시 에러 보고.

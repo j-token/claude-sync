@@ -3,7 +3,7 @@ name = "claude-sync-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GUI desktop app for Claude Code configuration sync"
+description = "Desktop app to select, back up and share Claude Code configuration via zip bundles or LAN P2P"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -12,10 +12,7 @@ tauri-build = { version = "2", features = [] }
 claude-sync-core.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-anyhow.workspace = true
-tracing.workspace = true
-chrono.workspace = true
-hostname.workspace = true

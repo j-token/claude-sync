@@ -1,105 +1,49 @@
 use anyhow::Result;
-use console::style;
 
-use claude_sync_core::config::SyncConfig;
-use claude_sync_core::git_ops;
+use claude_sync_core::app::App;
+use claude_sync_core::inventory::ItemKind;
+use claude_sync_core::{fsutil, p2p, paths};
 
-pub async fn run() -> Result<()> {
-    println!("{}", style("Claude Sync Doctor").bold().cyan());
-    println!("{}", style("─".repeat(30)).dim());
+use super::ui;
 
-    let mut issues = 0;
+pub fn run() -> Result<()> {
+    ui::title("claude-sync 진단");
+    let app = App::load()?;
 
-    // 1. Git 확인
-    match git_ops::check_git_available() {
-        Ok(version) => println!("  {} Git: {}", style("✓").green(), version),
-        Err(e) => {
-            println!("  {} Git: {}", style("✗").red(), e);
-            issues += 1;
+    let claude_dir = &app.env.claude_dir;
+    if claude_dir.is_dir() {
+        ui::ok(format!("Claude 설정 디렉토리: {}", claude_dir.display()));
+    } else {
+        ui::warn(format!("Claude 설정 디렉토리가 없습니다: {}", claude_dir.display()));
+    }
+
+    for (label, path) in [("settings.json", app.env.settings_path()), (".claude.json", app.env.claude_json.clone())] {
+        match fsutil::read_json(&path) {
+            Ok(Some(_)) => ui::ok(format!("{label} 읽기 정상")),
+            Ok(None) => ui::warn(format!("{label} 없음 ({})", path.display())),
+            Err(e) => ui::warn(format!("{label} 오류: {e}")),
         }
     }
 
-    // 2. Claude 디렉토리 확인
-    let claude_dir = SyncConfig::claude_dir();
-    if claude_dir.exists() {
-        println!(
-            "  {} Claude dir: {}",
-            style("✓").green(),
-            claude_dir.display()
-        );
-    } else {
-        println!(
-            "  {} Claude dir not found: {}",
-            style("✗").red(),
-            claude_dir.display()
-        );
-        issues += 1;
-    }
-
-    // 3. 설정 파일 확인
-    let config_path = SyncConfig::config_path();
-    if config_path.exists() {
-        match SyncConfig::load() {
-            Ok(config) => {
-                println!("  {} Config: valid", style("✓").green());
-                println!("    - Repo: {}", config.repo.url);
-                println!("    - Device: {}", config.device.id);
-                println!("    - Secret patterns: {}", config.secret_patterns.len());
-            }
-            Err(e) => {
-                println!("  {} Config parse error: {}", style("✗").red(), e);
-                issues += 1;
-            }
+    match app.inventory() {
+        Ok(inventory) => {
+            let counts: Vec<String> = ItemKind::ALL
+                .iter()
+                .filter(|k| inventory.count(**k) > 0)
+                .map(|k| format!("{} {}", k.label(), inventory.count(*k)))
+                .collect();
+            ui::ok(format!("항목 {}개: {}", inventory.items.len(), counts.join(", ")));
         }
-    } else {
-        println!(
-            "  {} Config not found — run 'claude-sync init'",
-            style("!").yellow()
-        );
-        issues += 1;
+        Err(e) => ui::warn(format!("항목 스캔 실패: {e}")),
     }
 
-    // 4. 싱크 레포 확인
-    let repo_path = SyncConfig::repo_path();
-    if repo_path.join(".git").exists() {
-        println!("  {} Sync repo: {}", style("✓").green(), repo_path.display());
+    ui::ok(format!("기기 이름: {}", app.config.device.name));
+    ui::ok(format!("백업 {}개 ({})", app.backups.list()?.len(), paths::backups_dir().display()));
+    ui::ok(format!("LAN 주소: {}", p2p::local_addresses().join(", ")));
 
-        // 원격 연결 확인
-        let repo = git_ops::GitRepo::open_or_init(&repo_path)?;
-        match repo.fetch("origin") {
-            Ok(_) => println!("  {} Remote: reachable", style("✓").green()),
-            Err(e) => {
-                println!("  {} Remote: unreachable — {}", style("✗").red(), e);
-                issues += 1;
-            }
-        }
-    } else {
-        println!(
-            "  {} Sync repo not initialized",
-            style("!").yellow()
-        );
-        issues += 1;
+    match std::net::TcpListener::bind(("0.0.0.0", app.config.p2p.port)) {
+        Ok(_) => ui::ok(format!("P2P 포트 {} 사용 가능", app.config.p2p.port)),
+        Err(e) => ui::warn(format!("P2P 포트 {}를 열 수 없습니다 ({e}). 공유 시 임의 포트를 씁니다.", app.config.p2p.port)),
     }
-
-    // 5. gh CLI 확인
-    match git_ops::get_gh_token() {
-        Ok(_) => println!("  {} gh CLI: authenticated", style("✓").green()),
-        Err(_) => println!(
-            "  {} gh CLI: not available (optional)",
-            style("~").dim()
-        ),
-    }
-
-    // 결과
-    println!();
-    if issues == 0 {
-        println!("{}", style("모든 검사 통과!").bold().green());
-    } else {
-        println!(
-            "{}",
-            style(format!("{} issue(s) found", issues)).bold().yellow()
-        );
-    }
-
     Ok(())
 }

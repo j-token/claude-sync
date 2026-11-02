@@ -2,54 +2,53 @@ use serde_json::Value;
 
 use crate::config::{SecretAction, SecretPattern};
 
-/// 시크릿 매칭 결과
 #[derive(Debug, Clone)]
 pub struct SecretMatch {
-    /// JSON 내 경로 (e.g., "mcpServers.hyperbrowser.env.HYPERBROWSER_API_KEY")
-    pub json_path: String,
-    /// 매칭된 패턴 이름
+    /// RFC 6901 JSON Pointer (e.g., "/env/EXA_API_KEY")
+    pub pointer: String,
     pub pattern_name: String,
-    /// 원본 값 (마스킹 전)
     pub original_value: String,
 }
 
-/// 알려진 시크릿 값 접두사
+impl SecretMatch {
+    /// 값 앞 4글자만 보여주는 미리보기. 멀티바이트 문자에서도 안전하다.
+    pub fn preview(&self) -> String {
+        let head: String = self.original_value.chars().take(4).collect();
+        format!("{head}…")
+    }
+}
+
 const KNOWN_SECRET_PREFIXES: &[&str] = &[
-    "sk-",
-    "sk-ant-",
-    "hb_",
-    "ctx7sk-",
-    "ghp_",
-    "gho_",
-    "ghu_",
-    "ghs_",
-    "ghr_",
-    "sbp_",
-    "sba_",
-    "eyJ", // JWT token prefix (base64 of '{"')
+    "sk-", "hb_", "ctx7sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "sbp_",
+    "sba_", "xoxb-", "xoxp-", "AKIA", "AIza", "eyJ",
 ];
 
-/// 시크릿 탐지 엔진
 pub struct SecretEngine {
     patterns: Vec<CompiledPattern>,
 }
 
 struct CompiledPattern {
     name: String,
-    /// 각 세그먼트를 regex로 컴파일
     segments: Vec<SegmentMatcher>,
     action: SecretAction,
 }
 
 enum SegmentMatcher {
-    /// 정확히 일치
     Exact(String),
-    /// 와일드카드 (*)
     Any,
-    /// 접미사 와일드카드 (e.g., *_API_KEY)
     Suffix(String),
-    /// 접두사 와일드카드 (e.g., API_*)
     Prefix(String),
+}
+
+impl SegmentMatcher {
+    fn matches(&self, key: &str) -> bool {
+        match self {
+            SegmentMatcher::Exact(s) => key.eq_ignore_ascii_case(s),
+            SegmentMatcher::Any => true,
+            SegmentMatcher::Suffix(suffix) => key.to_ascii_uppercase().ends_with(&suffix.to_ascii_uppercase()),
+            SegmentMatcher::Prefix(prefix) => key.to_ascii_uppercase().starts_with(&prefix.to_ascii_uppercase()),
+        }
+    }
 }
 
 impl SecretEngine {
@@ -58,116 +57,103 @@ impl SecretEngine {
             .iter()
             .map(|p| CompiledPattern {
                 name: p.name.clone(),
-                segments: parse_json_path(&p.json_path),
+                segments: parse_pattern(&p.json_path),
                 action: p.action.clone(),
             })
             .collect();
         Self { patterns: compiled }
     }
 
-    /// JSON 값에서 시크릿 탐지
     pub fn detect(&self, value: &Value) -> Vec<SecretMatch> {
         let mut matches = Vec::new();
-        self.walk_json(value, &[], &mut matches);
+        self.walk(value, &mut Vec::new(), &mut matches);
         matches
     }
 
-    /// JSON 값의 시크릿을 마스킹 (빈 문자열로 대체)
+    /// 시크릿 값을 빈 문자열로 바꾼 사본과 바뀐 위치(JSON Pointer)를 돌려준다.
     pub fn mask(&self, value: &Value) -> (Value, Vec<SecretMatch>) {
         let matches = self.detect(value);
         let mut masked = value.clone();
-
         for m in &matches {
-            set_json_value(&mut masked, &m.json_path, Value::String(String::new()));
+            if let Some(slot) = masked.pointer_mut(&m.pointer) {
+                *slot = Value::String(String::new());
+            }
         }
-
         (masked, matches)
     }
 
-    /// 마스킹된 JSON에 로컬 시크릿 값 복원
-    ///
-    /// local JSON에서 시크릿 경로를 탐지한 뒤, masked JSON의 해당 경로에
-    /// 로컬 값을 복원한다. masked JSON은 빈 문자열("")이므로 detect()가
-    /// 작동하지 않기 때문에 반드시 local 기준으로 탐지해야 한다.
-    pub fn unmask(&self, masked: &Value, local: &Value) -> Value {
-        let matches = self.detect(local);
-        let mut result = masked.clone();
-
-        for m in &matches {
-            if let Some(local_value) = get_json_value(local, &m.json_path) {
-                if let Value::String(s) = local_value {
-                    if !s.is_empty() {
-                        set_json_value(&mut result, &m.json_path, local_value.clone());
-                    }
-                }
-            }
-        }
-
-        result
-    }
-
-    /// 재귀적으로 JSON 트리를 탐색하며 시크릿 탐지
-    fn walk_json(&self, value: &Value, path: &[String], matches: &mut Vec<SecretMatch>) {
+    fn walk(&self, value: &Value, path: &mut Vec<String>, matches: &mut Vec<SecretMatch>) {
         match value {
             Value::Object(map) => {
-                for (key, val) in map {
-                    let mut current_path = path.to_vec();
-                    current_path.push(key.clone());
-
-                    // 패턴 매칭 체크
-                    if let Value::String(s) = val {
-                        if !s.is_empty() {
-                            for pattern in &self.patterns {
-                                if matches_pattern(&current_path, &pattern.segments) {
-                                    if pattern.action == SecretAction::Mask {
-                                        matches.push(SecretMatch {
-                                            json_path: current_path.join("."),
-                                            pattern_name: pattern.name.clone(),
-                                            original_value: s.clone(),
-                                        });
-                                    }
-                                    break;
-                                }
-                            }
-                            // 보조 탐지: 패턴에 안 걸렸어도 알려진 접두사 or 고엔트로피
-                            if !matches.iter().any(|m| m.json_path == current_path.join(".")) {
-                                if is_likely_secret(s, &current_path) {
-                                    matches.push(SecretMatch {
-                                        json_path: current_path.join("."),
-                                        pattern_name: "heuristic_detection".to_string(),
-                                        original_value: s.clone(),
-                                    });
-                                }
-                            }
+                for (key, child) in map {
+                    path.push(key.clone());
+                    if let Value::String(s) = child {
+                        if let Some(pattern_name) = self.classify(path, s) {
+                            matches.push(SecretMatch {
+                                pointer: to_pointer(path),
+                                pattern_name,
+                                original_value: s.clone(),
+                            });
                         }
+                    } else {
+                        self.walk(child, path, matches);
                     }
-
-                    // 재귀 탐색
-                    self.walk_json(val, &current_path, matches);
+                    path.pop();
                 }
             }
-            Value::Array(arr) => {
-                for (i, val) in arr.iter().enumerate() {
-                    let mut current_path = path.to_vec();
-                    current_path.push(i.to_string());
-                    self.walk_json(val, &current_path, matches);
+            Value::Array(items) => {
+                for (index, child) in items.iter().enumerate() {
+                    path.push(index.to_string());
+                    self.walk(child, path, matches);
+                    path.pop();
                 }
             }
             _ => {}
         }
     }
+
+    fn classify(&self, path: &[String], value: &str) -> Option<String> {
+        if value.is_empty() {
+            return None;
+        }
+        if let Some(pattern) = self
+            .patterns
+            .iter()
+            .find(|p| matches_suffix(path, &p.segments))
+        {
+            return (pattern.action != SecretAction::Keep).then(|| pattern.name.clone());
+        }
+        is_likely_secret(value, path).then(|| "heuristic".to_string())
+    }
 }
 
-/// JSONPath 패턴 파싱 ("mcpServers.*.env.*_API_KEY" 등)
-fn parse_json_path(path: &str) -> Vec<SegmentMatcher> {
-    path.split('.')
+/// 마스킹되었던 위치에 로컬의 기존 값을 되돌린다. 로컬에도 값이 없으면 그 위치를 반환한다.
+pub fn restore_masked(incoming: &mut Value, masked: &[String], local: Option<&Value>) -> Vec<String> {
+    let mut unresolved = Vec::new();
+    for pointer in masked {
+        let local_value = local
+            .and_then(|l| l.pointer(pointer))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        match (local_value, incoming.pointer_mut(pointer)) {
+            (Some(value), Some(slot)) => *slot = Value::String(value.to_string()),
+            (None, Some(_)) => unresolved.push(pointer.clone()),
+            _ => {}
+        }
+    }
+    unresolved
+}
+
+fn parse_pattern(pattern: &str) -> Vec<SegmentMatcher> {
+    pattern
+        .split('.')
         .map(|seg| {
             if seg == "*" {
                 SegmentMatcher::Any
-            } else if seg.starts_with('*') {
-                SegmentMatcher::Suffix(seg[1..].to_string())
-            } else if seg.ends_with('*') {
-                SegmentMatcher::Prefix(seg[..seg.len() - 1].to_string())
+            } else if let Some(suffix) = seg.strip_prefix('*') {
+                SegmentMatcher::Suffix(suffix.to_string())
+            } else if let Some(prefix) = seg.strip_suffix('*') {
+                SegmentMatcher::Prefix(prefix.to_string())
             } else {
                 SegmentMatcher::Exact(seg.to_string())
             }
@@ -175,110 +161,111 @@ fn parse_json_path(path: &str) -> Vec<SegmentMatcher> {
         .collect()
 }
 
-/// 실��� JSON 경로가 패턴과 매칭되는지 확인
-fn matches_pattern(path: &[String], segments: &[SegmentMatcher]) -> bool {
-    if path.len() != segments.len() {
+fn matches_suffix(path: &[String], segments: &[SegmentMatcher]) -> bool {
+    if segments.is_empty() || path.len() < segments.len() {
         return false;
     }
-
-    path.iter().zip(segments.iter()).all(|(key, seg)| match seg {
-        SegmentMatcher::Exact(s) => key == s,
-        SegmentMatcher::Any => true,
-        SegmentMatcher::Suffix(suffix) => key.ends_with(suffix),
-        SegmentMatcher::Prefix(prefix) => key.starts_with(prefix),
-    })
+    let tail = &path[path.len() - segments.len()..];
+    tail.iter().zip(segments).all(|(key, seg)| seg.matches(key))
 }
 
-/// 휴리스틱 시크릿 탐지
 fn is_likely_secret(value: &str, path: &[String]) -> bool {
-    // env 또는 headers 컨텍스트에서만 휴리스틱 적용
     let in_secret_context = path.iter().any(|p| p == "env" || p == "headers");
     if !in_secret_context {
         return false;
     }
-
-    // 알려진 접두사 체크
-    if KNOWN_SECRET_PREFIXES
-        .iter()
-        .any(|prefix| value.starts_with(prefix))
-    {
+    if KNOWN_SECRET_PREFIXES.iter().any(|prefix| value.starts_with(prefix)) {
         return true;
     }
-
-    // 고엔트로피 문자열 체크 (20자 이상, 엔트로피 > 3.5)
-    if value.len() >= 20 {
-        let entropy = shannon_entropy(value);
-        if entropy > 3.5 {
-            return true;
-        }
+    if url_has_credentials(value) {
+        return true;
     }
-
-    false
+    let looks_like_path_or_url = value.contains('/') || value.contains('\\') || value.contains(' ');
+    value.len() >= 20 && !looks_like_path_or_url && shannon_entropy(value) > 3.5
 }
 
-/// Shannon 엔트로피 계산
+/// `scheme://user:pass@host` 형태 (프록시 URL 등)
+fn url_has_credentials(value: &str) -> bool {
+    let Some((_, rest)) = value.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    authority.contains('@')
+}
+
 fn shannon_entropy(s: &str) -> f64 {
-    let len = s.len() as f64;
+    let len = s.chars().count() as f64;
     if len == 0.0 {
         return 0.0;
     }
-
     let mut freq = std::collections::HashMap::new();
     for c in s.chars() {
         *freq.entry(c).or_insert(0u32) += 1;
     }
-
-    freq.values().fold(0.0f64, |acc, &count| {
+    freq.values().fold(0.0, |acc, &count| {
         let p = count as f64 / len;
         acc - p * p.log2()
     })
 }
 
-/// JSON 경로("a.b.c")를 따라 값 가져오기
-fn get_json_value<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut current = root;
-
-    for part in &parts {
-        match current {
-            Value::Object(map) => {
-                current = map.get(*part)?;
-            }
-            Value::Array(arr) => {
-                let idx: usize = part.parse().ok()?;
-                current = arr.get(idx)?;
-            }
-            _ => return None,
-        }
-    }
-
-    Some(current)
+pub fn to_pointer(path: &[String]) -> String {
+    path.iter()
+        .map(|seg| format!("/{}", seg.replace('~', "~0").replace('/', "~1")))
+        .collect()
 }
 
-/// JSON 경로("a.b.c")를 따라 값 설정
-fn set_json_value(root: &mut Value, path: &str, new_value: Value) {
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut current = root;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::SyncConfig;
+    use serde_json::json;
 
-    for (i, part) in parts.iter().enumerate() {
-        if i == parts.len() - 1 {
-            // 마지막 세그먼트: 값 설정
-            if let Value::Object(map) = current {
-                map.insert(part.to_string(), new_value);
-                return;
-            }
-        } else {
-            // 중간 세그먼트: 하위 탐색
-            match current {
-                Value::Object(map) => {
-                    current = map.get_mut(*part).unwrap();
-                }
-                Value::Array(arr) => {
-                    let idx: usize = part.parse().unwrap();
-                    current = arr.get_mut(idx).unwrap();
-                }
-                _ => return,
-            }
-        }
+    fn engine() -> SecretEngine {
+        SecretEngine::new(&SyncConfig::default_secret_patterns())
+    }
+
+    #[test]
+    fn env_아래_api_key는_마스킹되고_원래_값은_복원된다() {
+        let local = json!({"command": "npx", "env": {"EXA_API_KEY": "abc123", "MODE": "fast"}});
+
+        let (mut masked, matches) = engine().mask(&local);
+        let pointers: Vec<String> = matches.iter().map(|m| m.pointer.clone()).collect();
+
+        assert_eq!(pointers, vec!["/env/EXA_API_KEY"]);
+        assert_eq!(masked["env"]["EXA_API_KEY"], "");
+        assert_eq!(masked["env"]["MODE"], "fast");
+
+        let unresolved = restore_masked(&mut masked, &pointers, Some(&local));
+        assert!(unresolved.is_empty());
+        assert_eq!(masked["env"]["EXA_API_KEY"], "abc123");
+    }
+
+    #[test]
+    fn 인증정보가_들어간_프록시_url은_시크릿으로_본다() {
+        let settings = json!({"env": {"HTTPS_PROXY": "http://me:pw@proxy:8080", "NO_PROXY": "http://proxy:8080"}});
+
+        let pointers: Vec<String> = engine().detect(&settings).into_iter().map(|m| m.pointer).collect();
+
+        assert_eq!(pointers, vec!["/env/HTTPS_PROXY"]);
+    }
+
+    #[test]
+    fn 로컬에_값이_없으면_복원되지_않은_위치를_알린다() {
+        let mut incoming = json!({"env": {"EXA_API_KEY": ""}});
+
+        let unresolved = restore_masked(&mut incoming, &["/env/EXA_API_KEY".to_string()], None);
+
+        assert_eq!(unresolved, vec!["/env/EXA_API_KEY"]);
+    }
+
+    #[test]
+    fn 멀티바이트_값의_미리보기에서_패닉하지_않는다() {
+        let m = SecretMatch {
+            pointer: "/env/X".into(),
+            pattern_name: "p".into(),
+            original_value: "한글비밀값입니다".into(),
+        };
+
+        assert_eq!(m.preview(), "한글비밀…");
     }
 }
