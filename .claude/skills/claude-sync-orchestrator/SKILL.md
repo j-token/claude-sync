@@ -141,7 +141,7 @@ _workspace/
 1. 사용자: "새로운 config 필드 추가해줘"
 2. Phase 1: Rust + Frontend 풀스택 판단
 3. Phase 2: 3인 팀 구성
-4. Phase 3: rust-eng (config.rs + lib.rs) → frontend-eng (types.ts + Dashboard) → qa-eng (검증)
+4. Phase 3: rust-eng (config.rs + lib.rs) → frontend-eng (types.ts + commands.ts + SettingsTab) → qa-eng (검증)
 5. Phase 4: PASS
 6. Phase 5: 결과 보고
 

@@ -58,8 +58,8 @@ cd crates/claude-sync-gui && cargo tauri build     # 전체 앱 번들
 claude-sync --help
 claude-sync doctor
 claude-sync status
-claude-sync push --dry-run
-claude-sync pull --dry-run
+claude-sync export -t essentials -o <tmp>/b.zip
+claude-sync import <tmp>/b.zip --dry-run --all
 claude-sync skill list
 claude-sync secret list
 claude-sync config show
