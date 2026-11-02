@@ -3,10 +3,11 @@ mod commands;
 use clap::Parser;
 use commands::Cli;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(std::io::stderr)
+        .init();
 
-    let cli = Cli::parse();
-    commands::execute(cli).await
+    commands::execute(Cli::parse())
 }
